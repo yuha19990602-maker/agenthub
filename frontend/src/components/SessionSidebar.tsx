@@ -7,7 +7,7 @@ import type { PortalSession } from '../types';
 
 interface SessionSidebarProps {
   currentSessionId?: string;
-  onSelectSession: (sessionId: string) => void;
+  onSelectSession: (session: PortalSession) => void;
   onNewChat: () => void;
 }
 
@@ -18,15 +18,16 @@ export function SessionSidebar({
 }: SessionSidebarProps) {
   const [sessions, setSessions] = useState<PortalSession[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [limit, setLimit] = useState(50);
 
   useEffect(() => {
-    loadSessions();
+    loadSessions(limit);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentSessionId]); // Reload sessions when current session changes to show updated state
+  }, [currentSessionId, limit]);
 
-  const loadSessions = async () => {
+  const loadSessions = async (requestLimit: number) => {
     try {
-      const response = await sessionApi.listSessions({ limit: 50 });
+      const response = await sessionApi.listSessions({ limit: requestLimit });
       setSessions(response.data.sessions);
     } catch (error) {
       console.error('Failed to load sessions:', error);
@@ -43,6 +44,50 @@ export function SessionSidebar({
       hour: '2-digit',
       minute: '2-digit',
     });
+  };
+
+  const nativeSessions = sessions.filter((session) => session.mode === 'native');
+  const embeddedSessions = sessions.filter((session) => session.mode === 'embedded');
+
+  const renderSessionGroup = (title: string, items: PortalSession[]) => {
+    if (items.length === 0) return null;
+
+    return (
+      <div className="space-y-2">
+        <div className="px-1 pt-2 text-xs font-semibold tracking-wide text-gray-400 uppercase">
+          {title}
+        </div>
+        {items.map((session) => (
+          <div
+            key={session.portal_session_id}
+            onClick={() => onSelectSession(session)}
+            className={`p-3 rounded-lg cursor-pointer transition-colors ${
+              currentSessionId === session.portal_session_id
+                ? 'bg-primary-50 border border-primary-200'
+                : 'hover:bg-gray-50 border border-transparent'
+            }`}
+          >
+            <div className="flex items-start space-x-2">
+              <MessageSquare className="w-4 h-4 text-gray-400 mt-0.5 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-gray-900 truncate">
+                  {session.resource_name || session.title || session.resource_id || '未知资源'}
+                </p>
+                {session.last_message_preview && (
+                  <p className="text-xs text-gray-500 truncate mt-0.5">
+                    {session.last_message_preview}
+                  </p>
+                )}
+                <div className="flex items-center mt-1 text-xs text-gray-500">
+                  <Clock className="w-3 h-3 mr-1" />
+                  {formatTime(session.last_message_at || session.updated_at)}
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
   };
 
   return (
@@ -68,35 +113,16 @@ export function SessionSidebar({
           </div>
         ) : (
           <div className="space-y-2">
-            {sessions.map((session) => (
-              <div
-                key={session.portal_session_id}
-                onClick={() => onSelectSession(session.portal_session_id)}
-                className={`p-3 rounded-lg cursor-pointer transition-colors ${
-                  currentSessionId === session.portal_session_id
-                    ? 'bg-primary-50 border border-primary-200'
-                    : 'hover:bg-gray-50 border border-transparent'
-                }`}
+            {renderSessionGroup('对话历史', nativeSessions)}
+            {renderSessionGroup('最近打开', embeddedSessions)}
+            {sessions.length >= limit && (
+              <button
+                onClick={() => setLimit((current) => current + 50)}
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50"
               >
-                <div className="flex items-start space-x-2">
-                  <MessageSquare className="w-4 h-4 text-gray-400 mt-0.5 flex-shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-gray-900 truncate">
-                      {session.resource_name || session.title || session.resource_id || '未知资源'}
-                    </p>
-                    {session.last_message_preview && (
-                      <p className="text-xs text-gray-500 truncate mt-0.5">
-                        {session.last_message_preview}
-                      </p>
-                    )}
-                    <div className="flex items-center mt-1 text-xs text-gray-500">
-                      <Clock className="w-3 h-3 mr-1" />
-                      {formatTime(session.last_message_at || session.updated_at)}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
+                加载更多
+              </button>
+            )}
           </div>
         )}
       </div>

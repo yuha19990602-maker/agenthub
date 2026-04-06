@@ -3,6 +3,7 @@
 import uuid
 import json
 import copy
+import hashlib
 import logging
 from contextlib import asynccontextmanager
 from typing import List, Optional, AsyncIterator
@@ -24,6 +25,7 @@ from .models import (
 from .auth.deps import SessionUser, OptionalUser, AdminUser
 from .auth.routes import router as auth_router
 from .catalog.service import catalog_service
+from .catalog.sync_service import resource_sync_service
 from .acl.service import acl_service
 from .adapters.opencode import OpenCodeAdapter
 from .adapters.skill_chat import SkillChatAdapter
@@ -172,6 +174,16 @@ async def _get_active_binding(portal_session_id: str) -> SessionBinding:
     return binding
 
 
+def _get_resource_or_404(resource_id: str) -> Resource:
+    """Get resource or raise 404."""
+    return catalog_service.get_resource_or_raise(resource_id)
+
+
+def _require_resource_access(resource: Resource, user) -> None:
+    """Enforce resource ACL."""
+    acl_service.require_resource_access(resource, user)
+
+
 def _get_adapter_for_resource(resource: Resource) -> str:
     """
     Determine adapter name from resource.
@@ -243,6 +255,8 @@ def _enrich_session(session: PortalSession) -> dict:
     """Enrich session for API response"""
     snapshot = session.resource_snapshot or {}
     resource_name = snapshot.get("resource_name", session.resource_id)
+    launch_mode = snapshot.get("launch_mode")
+    adapter = snapshot.get("adapter") or session.metadata.get("adapter")
     return {
         "portal_session_id": session.portal_session_id,
         "resource_id": session.resource_id,
@@ -258,6 +272,8 @@ def _enrich_session(session: PortalSession) -> dict:
         "last_message_preview": session.last_message_preview,
         "parent_session_id": session.parent_session_id,
         "metadata": session.metadata,
+        "adapter": adapter,
+        "mode": "native" if launch_mode == "native" else "embedded",
     }
 
 
@@ -290,6 +306,28 @@ def deep_merge(dst: dict, src: dict) -> dict:
         else:
             dst[k] = copy.deepcopy(v)
     return dst
+
+
+def _stable_text_hash(text: str) -> str:
+    """Stable hash for message dedupe across process restarts."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+async def _get_openai_compatible_history(
+    portal_session_id: str,
+    resource: Optional[Resource],
+    current_text: str,
+) -> List[PortalMessage]:
+    """Exclude the just-persisted current user turn from local history."""
+    history = await storage.list_session_messages(
+        portal_session_id,
+        limit=resource.config.history_window if resource else 20,
+    )
+    if history:
+        last_message = history[-1]
+        if last_message.role == "user" and last_message.text == current_text:
+            return history[:-1]
+    return history
 
 
 # Context priority order (lowest to highest)
@@ -335,19 +373,8 @@ async def list_resources_grouped(user: SessionUser):
 @app.get("/api/resources/{resource_id}", response_model=Resource)
 async def get_resource(resource_id: str, user: SessionUser):
     """Get resource details by ID"""
-    resource = catalog_service.get_resource_by_id(resource_id)
-    if not resource:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Resource not found: {resource_id}"
-        )
-
-    if not acl_service.check_resource_access(resource, user):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied to this resource"
-        )
-
+    resource = _get_resource_or_404(resource_id)
+    _require_resource_access(resource, user)
     return resource
 
 
@@ -357,18 +384,8 @@ async def launch_resource(resource_id: str, user: SessionUser):
     Launch a resource (create session or generate launch token).
     Creates a PortalSession + SessionBinding for all resource types.
     """
-    resource = catalog_service.get_resource_by_id(resource_id)
-    if not resource:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Resource not found: {resource_id}"
-        )
-
-    if not acl_service.check_resource_access(resource, user):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied to this resource"
-        )
+    resource = _get_resource_or_404(resource_id)
+    _require_resource_access(resource, user)
 
     portal_session_id = str(uuid.uuid4())
     snapshot = _build_resource_snapshot(resource)
@@ -521,7 +538,7 @@ async def get_session_resume(portal_session_id: str, user: SessionUser) -> Sessi
     adapter = binding.adapter
     
     # Get resource for additional info
-    resource = catalog_service.get_resource_by_id(session.resource_id)
+    resource = catalog_service.get_resource_or_none(session.resource_id)
     
     if adapter in ("websdk", "iframe"):
         # Embedded mode
@@ -595,16 +612,19 @@ async def get_session_messages(portal_session_id: str, user: SessionUser):
         else:
             messages = await opencode_adapter.get_messages(binding.engine_session_id)
 
-        # Backfill into PortalMessage store with dedupe
+        # Backfill into PortalMessage store with stable dedupe
         for i, msg in enumerate(messages):
-            dedupe_key = f"backfill:{portal_session_id}:{msg.role}:{i}"
+            source_message_id = getattr(msg, 'engine_message_id', None)
+            dedupe_key = source_message_id or (
+                f"backfill:{binding.adapter}:{binding.engine_session_id}:{msg.role}:{i}:{_stable_text_hash(msg.text)}"
+            )
             await _save_portal_message(
                 portal_session_id=portal_session_id,
                 role=msg.role,
                 text=msg.text,
                 dedupe_key=dedupe_key,
                 source_provider=binding.adapter,
-                source_message_id=getattr(msg, 'engine_message_id', None),
+                source_message_id=source_message_id,
             )
 
         return messages
@@ -659,7 +679,7 @@ async def send_session_message(
         elif adapter_name == "openai_compatible":
             # Get history for context
             resource = catalog_service.get_resource_by_id(session.resource_id)
-            history = await storage.list_session_messages(portal_session_id, limit=resource.config.history_window if resource else 20)
+            history = await _get_openai_compatible_history(portal_session_id, resource, body.text)
             response = await openai_compatible_adapter.send_message(
                 resource=resource,
                 history=history,
@@ -802,7 +822,7 @@ async def stream_message_response(
             )
         elif adapter_name == "openai_compatible":
             resource = catalog_service.get_resource_by_id(session.resource_id)
-            history = await storage.list_session_messages(portal_session_id, limit=resource.config.history_window if resource else 20)
+            history = await _get_openai_compatible_history(portal_session_id, resource, body.text)
             stream_iter = openai_compatible_adapter.send_message_stream(
                 resource=resource,
                 history=history,
@@ -1046,19 +1066,8 @@ async def update_user_resource_context(
     Validates resource existence and ACL before update.
     """
     # Validate resource exists
-    resource = catalog_service.get_resource_by_id(resource_id)
-    if not resource:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Resource not found: {resource_id}"
-        )
-    
-    # Validate ACL
-    if not acl_service.check_resource_access(resource, user):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied to this resource"
-        )
+    resource = _get_resource_or_404(resource_id)
+    _require_resource_access(resource, user)
     
     scope_key = f"{user.emp_no}:{resource_id}"
     
@@ -1098,13 +1107,8 @@ async def admin_sync_resources(
     Trigger resource sync from OpenWork.
     Requires admin role.
     """
-    # Import sync_resources function
-    from scripts.sync_resources import sync_resources
-    
     try:
-        merged = await sync_resources(workspace_id=workspace_id, reload_catalog=True)
-        
-        # Log admin action
+        merged = await resource_sync_service.sync(workspace_id=workspace_id, operator=user.emp_no)
         logger.info(f"Admin {user.emp_no} triggered resource sync for workspace {workspace_id}")
         
         return SyncResult(

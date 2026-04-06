@@ -1,6 +1,5 @@
 """Authentication service - SSO OAuth2 + Local Session implementation"""
 
-import uuid
 import time
 import secrets
 from typing import Optional, Dict, Any
@@ -49,8 +48,10 @@ class UserRepository:
         if emp_no in self._mock_users:
             return self._mock_users[emp_no]
         
-        # Auto-provision new user (dev mode behavior)
-        # In production, you might want to return None here
+        # Auto-provision only in dev mode.
+        if settings.env != "dev":
+            return None
+
         user = UserCtx(
             emp_no=emp_no,
             name=user_name,
@@ -110,17 +111,22 @@ class SSOService:
         3. Validate iss, aud, exp claims
         """
         import jwt
-        
-        # For demo: decode without verification (insecure!)
-        # In production, use proper verification:
-        # - Fetch JWKS from settings.sso_jwks_url
-        # - Use jwt.PyJWKClient to get signing key
-        # - Verify signature and claims
-        
+
         try:
-            # Attempt to decode without verification for demo
-            # In production, verify with: jwt.decode(token, key, algorithms=["RS256"])
-            claims = jwt.decode(token, options={"verify_signature": False})
+            if settings.env == "dev" and not settings.sso_jwks_url:
+                claims = jwt.decode(token, options={"verify_signature": False})
+            else:
+                if not settings.sso_jwks_url:
+                    raise ValueError("SSO_JWKS_URL not configured")
+                jwks_client = jwt.PyJWKClient(settings.sso_jwks_url)
+                signing_key = jwks_client.get_signing_key_from_jwt(token)
+                claims = jwt.decode(
+                    token,
+                    signing_key.key,
+                    algorithms=["RS256", "ES256", "HS256"],
+                    audience=settings.sso_client_id or None,
+                    options={"verify_aud": bool(settings.sso_client_id)},
+                )
             return claims
         except jwt.PyJWTError as e:
             raise ValueError(f"Invalid JWT: {e}")
@@ -140,7 +146,7 @@ class AuthSessionService:
         session = AuthSession(
             session_id=secrets.token_urlsafe(32),
             user_id=user.emp_no,
-            user_name=user.name,
+            user_name=claims.get("preferred_username") or claims.get("email") or user.emp_no,
             roles=user.roles,
             expires_at=now + settings.session_max_age_sec,
             created_at=now,

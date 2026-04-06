@@ -20,6 +20,11 @@ interface ChatInterfaceProps {
   onRestart?: () => void;
 }
 
+type ChatMessage = Message & {
+  message_id?: string;
+  status?: 'streaming' | 'done' | 'error';
+};
+
 // Strip empty lines from text
 const stripText = (text: string): string => {
   return text
@@ -122,7 +127,7 @@ function FilePreview({ file, onRemove, content }: { file: PendingFile; onRemove:
 }
 
 export function ChatInterface({ sessionId, resource, onRestart }: ChatInterfaceProps) {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
@@ -266,7 +271,7 @@ export function ChatInterface({ sessionId, resource, onRestart }: ChatInterfaceP
     const messageText = buildMessageWithFiles();
     if (!messageText) return;
 
-    const userMessage: Message = { role: 'user', text: messageText, timestamp: new Date().toISOString() };
+    const userMessage: ChatMessage = { role: 'user', text: messageText, timestamp: new Date().toISOString() };
     setMessages(prev => [...prev, userMessage]);
     setInputText('');
     setIsLoading(true);
@@ -275,8 +280,6 @@ export function ChatInterface({ sessionId, resource, onRestart }: ChatInterfaceP
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
 
     setIsStreaming(true);
-    const assistantMessage: Message = { role: 'assistant', text: '', timestamp: new Date().toISOString() };
-    setMessages(prev => [...prev, assistantMessage]);
 
     console.log('ChatInterface: Sending message to session', sessionId, 'message length:', messageText.length);
     
@@ -287,33 +290,74 @@ export function ChatInterface({ sessionId, resource, onRestart }: ChatInterfaceP
         {
         onStart: (messageId: string) => {
           console.log('ChatInterface: Stream started, messageId:', messageId);
+          setMessages(prev => [
+            ...prev,
+            {
+              message_id: messageId,
+              role: 'assistant',
+              text: '',
+              status: 'streaming',
+              timestamp: new Date().toISOString(),
+            },
+          ]);
         },
-        onDelta: (chunk: string) => {
+        onDelta: (chunk: string, messageId: string) => {
           setMessages(prev => {
-            const lastMsg = prev[prev.length - 1];
-            if (lastMsg.role === 'assistant') {
-              return [...prev.slice(0, -1), { ...lastMsg, text: lastMsg.text + chunk }];
-            }
-            return prev;
+            let matched = false;
+            const nextMessages = prev.map((msg) => {
+              if (msg.message_id === messageId) {
+                matched = true;
+                return { ...msg, text: msg.text + chunk };
+              }
+              return msg;
+            });
+            if (matched) return nextMessages;
+            return [
+              ...prev,
+              {
+                message_id: messageId,
+                role: 'assistant',
+                text: chunk,
+                status: 'streaming',
+                timestamp: new Date().toISOString(),
+              },
+            ];
           });
         },
-        onDone: () => {
+        onDone: (messageId: string) => {
           console.log('ChatInterface: Stream done');
           setIsLoading(false);
           setIsStreaming(false);
           abortControllerRef.current = null;
+          setMessages(prev => prev.map((msg) => (
+            msg.message_id === messageId ? { ...msg, status: 'done' } : msg
+          )));
         },
-        onError: (error: string) => {
+        onError: (error: string, messageId?: string) => {
           console.error('ChatInterface: Stream error:', error);
           setIsLoading(false);
           setIsStreaming(false);
           abortControllerRef.current = null;
           setMessages(prev => {
-            const lastMsg = prev[prev.length - 1];
-            if (lastMsg.role === 'assistant' && lastMsg.text === '') {
-              return [...prev.slice(0, -1), { role: 'system', text: '消息发送失败，请重试', timestamp: new Date().toISOString() }];
+            if (messageId) {
+              let found = false;
+              const nextMessages = prev.map((msg) => {
+                if (msg.message_id === messageId) {
+                  found = true;
+                  return {
+                    ...msg,
+                    status: 'error' as const,
+                    text: msg.text || '消息发送失败，请重试',
+                  };
+                }
+                return msg;
+              });
+              if (found) return nextMessages;
             }
-            return prev;
+            return [
+              ...prev,
+              { role: 'system', text: '消息发送失败，请重试', timestamp: new Date().toISOString() },
+            ];
           });
         }
       }

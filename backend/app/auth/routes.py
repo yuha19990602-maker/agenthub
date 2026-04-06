@@ -1,7 +1,7 @@
 """Authentication routes - SSO OAuth2 + Local Session"""
 
 import secrets
-import time
+import urllib.parse
 from fastapi import APIRouter, HTTPException, status, Cookie, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from typing import Annotated, Optional
@@ -15,18 +15,7 @@ from ..store import store as storage
 
 
 router = APIRouter(prefix="/api/auth", tags=["authentication"])
-
-# Fake SSO mode detection - auto-enable when SSO is not configured
-# This allows testing without real SSO infrastructure
-_is_fake_sso_mode = not settings.sso_authorize_url or not settings.sso_token_url
-
-if _is_fake_sso_mode:
-    print("⚠️  SSO not configured - enabling FAKE SSO mode for testing")
-    print("   Any authorization code will be accepted")
-    from .fake_sso import get_fake_sso
-    _fake_sso = get_fake_sso()
-else:
-    _fake_sso = None
+_mock_login_enabled = settings.enable_mock_login and settings.env == "dev"
 
 
 # Request/Response models
@@ -62,21 +51,11 @@ class LogoutResponse(BaseModel):
 
 
 def _build_authorize_url(state: str, next_url: str = "/") -> str:
-    """Build SSO authorize URL (or fake SSO URL if not configured)"""
-    import urllib.parse
-    
-    if _is_fake_sso_mode and _fake_sso:
-        # Fake SSO mode: immediately redirect back with code
-        code = _fake_sso.issue_authorization_code(next_url)
-        params = {
-            "code": code,
-            "state": state,
-        }
-        query = urllib.parse.urlencode(params)
-        # Build the callback URL directly
-        return f"{settings.sso_redirect_uri}?{query}"
-    
-    # Real SSO mode
+    """Build SSO authorize URL or dev mock-login URL."""
+    if _mock_login_enabled and (not settings.sso_authorize_url or not settings.sso_token_url):
+        query = urllib.parse.urlencode({"emp_no": "E10001", "next": next_url})
+        return f"/api/auth/mock-login?{query}"
+
     params = {
         "client_id": settings.sso_client_id,
         "redirect_uri": settings.sso_redirect_uri,
@@ -88,87 +67,70 @@ def _build_authorize_url(state: str, next_url: str = "/") -> str:
     return f"{settings.sso_authorize_url}?{query}"
 
 
+async def _authenticate_from_code(code: str, state: Optional[str]) -> tuple[UserCtx, AuthSession, str]:
+    """Exchange code, validate claims, resolve user, and create session."""
+    if state:
+        next_url = await storage.consume_oauth_state(state)
+        if not next_url:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired state",
+            )
+    else:
+        next_url = "/"
+
+    if not settings.sso_token_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="SSO token endpoint is not configured",
+        )
+
+    try:
+        token_resp = await sso_service.exchange_code(code)
+        claims = sso_service.verify_jwt(
+            token_resp.get("id_token") or token_resp.get("access_token")
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Failed to authenticate code: {str(e)}",
+        )
+
+    user_name = claims.get("preferred_username") or claims.get("email") or claims.get("sub")
+    if not user_name:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User identifier not found in token",
+        )
+
+    user = await user_repo.get_active_user_by_user_name(user_name)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authorized to access this portal",
+        )
+
+    auth_session = await auth_session_service.create_session(user, claims)
+    return user, auth_session, next_url
+
+
 @router.get("/login-url", response_model=LoginUrlResponse)
 async def get_login_url(next: str = "/"):
     """
     Get SSO login URL with state parameter.
     Frontend should redirect user to this URL to start OAuth2 flow.
     """
-    # Generate state and store it
     state = secrets.token_urlsafe(32)
     await storage.save_oauth_state(state, next)
-    
     return LoginUrlResponse(login_url=_build_authorize_url(state, next))
 
 
 @router.post("/exchange", response_model=ExchangeCodeResponse)
 async def exchange_code(body: ExchangeCodeRequest):
-    """
-    Exchange OAuth2 authorization code for access token.
-    Creates local session and sets portal_sid cookie.
-    
-    In FAKE SSO mode, any code will be accepted.
-    """
-    # Validate state if provided
-    if body.state:
-        next_url = await storage.consume_oauth_state(body.state)
-        if not next_url:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid or expired state"
-            )
-    else:
-        next_url = "/"
-    
-    # Exchange code for token
-    try:
-        if _is_fake_sso_mode and _fake_sso:
-            # Fake SSO: accept any code
-            token_resp = await _fake_sso.exchange_code(body.code)
-        else:
-            # Real SSO: call external service
-            token_resp = await sso_service.exchange_code(body.code)
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Failed to exchange code: {str(e)}"
-        )
-    
-    # Verify JWT and extract claims
-    try:
-        if _is_fake_sso_mode and _fake_sso:
-            claims = _fake_sso.verify_jwt(
-                token_resp.get("id_token") or token_resp.get("access_token")
-            )
-        else:
-            claims = sso_service.verify_jwt(
-                token_resp.get("id_token") or token_resp.get("access_token")
-            )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Failed to verify token: {str(e)}"
-        )
-    
-    # Extract user identifier from claims
-    # Standard OIDC claims: 'preferred_username', 'email', 'sub'
-    user_name = claims.get("preferred_username") or claims.get("email") or claims.get("sub")
-    if not user_name:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User identifier not found in token"
-        )
-    
-    # Lookup local user
-    user = await user_repo.get_active_user_by_user_name(user_name)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authorized to access this portal"
-        )
-    
-    # Create local session
-    auth_session = await auth_session_service.create_session(user, claims)
+    """Exchange OAuth2 authorization code for access token and create local session."""
+    user, auth_session, next_url = await _authenticate_from_code(body.code, body.state)
     
     # Build response with cookie
     resp = JSONResponse({
@@ -196,34 +158,18 @@ async def exchange_code(body: ExchangeCodeRequest):
 
 @router.get("/callback")
 async def sso_callback(code: str, state: Optional[str] = None):
-    """
-    SSO callback endpoint - handles OAuth2 redirect from identity provider.
-    This is an alternative to frontend handling the exchange.
-    
-    In FAKE SSO mode, this also handles the immediate redirect from login-url.
-    """
-    # Exchange code via our own API
-    try:
-        exchange_body = ExchangeCodeRequest(code=code, state=state)
-        result = await exchange_code(exchange_body)
-        
-        # Get next URL from response or use default
-        next_url = "/"
-        if hasattr(result, 'body') and isinstance(result.body, bytes):
-            import json
-            body_data = json.loads(result.body)
-            next_url = body_data.get("next", "/")
-        elif hasattr(result, 'body') and hasattr(result.body, 'get'):
-            next_url = result.body.get("next", "/")
-        
-        return RedirectResponse(url=next_url)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Authentication failed: {str(e)}"
-        )
+    """SSO callback endpoint for providers that redirect to the backend."""
+    user, auth_session, next_url = await _authenticate_from_code(code, state)
+    resp = RedirectResponse(url=next_url, status_code=302)
+    resp.set_cookie(
+        key="portal_sid",
+        value=auth_session.session_id,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+        max_age=settings.session_max_age_sec,
+    )
+    return resp
 
 
 @router.get("/me", response_model=UserInfoResponse)
@@ -253,7 +199,7 @@ async def logout(
 
 # Dev-only mock login endpoint - kept for backward compatibility
 # In FAKE SSO mode, this is redundant but kept for compatibility
-if settings.enable_mock_login and settings.env == "dev":
+if _mock_login_enabled:
     
     @router.get("/mock-login")
     async def mock_login(

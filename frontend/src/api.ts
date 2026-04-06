@@ -17,6 +17,11 @@ import type {
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/';
 
+const buildApiUrl = (path: string): string => {
+  const normalizedBase = API_BASE_URL.endsWith('/') ? API_BASE_URL : `${API_BASE_URL}/`;
+  return new URL(path.replace(/^\//, ''), normalizedBase).toString();
+};
+
 const api = axios.create({
   baseURL: API_BASE_URL,
   withCredentials: true, // Send cookies (portal_sid)
@@ -48,16 +53,8 @@ export const authApi = {
       window.location.href = res.data.login_url;
     }).catch((err) => {
       console.error('Failed to get login URL:', err);
-      // Fallback for dev mode
-      if (import.meta.env.DEV) {
-        window.location.href = `/api/auth/mock-login?emp_no=E10001&next=${encodeURIComponent(next)}`;
-      }
     });
   },
-
-  // Legacy - kept for dev mode fallback
-  mockLogin: (empNo: string) =>
-    api.get(`/api/auth/mock-login?emp_no=${empNo}`),
 };
 
 // Resource APIs
@@ -132,7 +129,7 @@ export const sessionApi = {
     const controller = new AbortController();
     const { signal } = controller;
 
-    const url = `${API_BASE_URL}api/sessions/${sessionId}/messages/stream`;
+    const url = buildApiUrl(`/api/sessions/${sessionId}/messages/stream`);
 
     fetch(url, {
       method: 'POST',
@@ -227,9 +224,8 @@ export const sessionApi = {
           }
         }
 
-        // Ensure onDone is called even if no explicit done event
         if (!doneSeen) {
-          handlers.onDone?.(currentMessageId);
+          handlers.onError?.('stream closed without done', currentMessageId);
         }
       })
       .catch((error) => {

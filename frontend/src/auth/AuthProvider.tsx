@@ -1,13 +1,6 @@
 /** Authentication Provider - V2 (SSO + Local Session) */
 
-import {
-  createContext,
-  useContext,
-  useState,
-  useEffect,
-  useCallback,
-  type ReactNode,
-} from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { authApi } from '../api';
 import type { UserCtx } from '../types';
 
@@ -37,14 +30,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<UserCtx | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  /**
-   * Redirect to SSO login
-   */
-  const redirectToLogin = useCallback(() => {
-    console.log('Redirecting to SSO login...');
-    authApi.redirectToSSO(window.location.pathname + window.location.search);
-  }, []);
 
   /**
    * Bootstrap authentication on mount.
@@ -82,18 +67,13 @@ export function AuthProvider({ children }: AuthProviderProps) {
     } catch (err: any) {
       console.log('Not authenticated:', err?.response?.data?.detail || err?.message);
       setUser(null);
-      // Only set error for unexpected errors, not 401
       if (err?.response?.status !== 401) {
         setError(err?.message || 'Authentication failed');
       }
-      // Trigger redirect to login after a short delay
-      setTimeout(() => {
-        redirectToLogin();
-      }, 100);
     } finally {
       setLoading(false);
     }
-  }, [redirectToLogin]);
+  }, []);
 
   /**
    * Refresh user info from current session
@@ -105,10 +85,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
     } catch (err: any) {
       console.error('Failed to refresh user:', err);
       setUser(null);
-      if (err?.response?.status === 401) {
-        // Session expired, redirect to login
-        authApi.redirectToSSO(window.location.pathname + window.location.search);
-      }
     }
   }, []);
 
@@ -122,8 +98,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
       console.error('Logout error:', err);
     } finally {
       setUser(null);
-      // Redirect to SSO login
-      authApi.redirectToSSO('/');
     }
   }, []);
 

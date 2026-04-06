@@ -5,7 +5,7 @@ import { authApi } from '../api';
 
 /**
  * This component automatically logs in the user in development mode.
- * It bypasses the SSO flow and uses the mock-login endpoint.
+ * It requests a login URL from the backend, which may resolve to mock-login in dev.
  */
 export function DevAutoLogin() {
   const [status, setStatus] = useState<'logging_in' | 'success' | 'error'>('logging_in');
@@ -38,33 +38,19 @@ export function DevAutoLogin() {
       return;
     }
     
-    // Try auto-login via AJAX with timeout
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      console.log('DevAutoLogin: Request timeout, aborting...');
-      controller.abort();
-    }, 10000);
-    
-    authApi.mockLogin('E10001')
+    authApi.getLoginUrl('/')
       .then((response) => {
-        clearTimeout(timeoutId);
-        console.log('DevAutoLogin: Success!', response.data);
         setStatus('success');
-        // Use replace to avoid adding to history, use relative path
-        setTimeout(() => {
-          window.location.replace('/');
-        }, 500);
+        window.location.replace(response.data.login_url);
       })
       .catch((err) => {
-        clearTimeout(timeoutId);
         console.error('DevAutoLogin: Failed', err);
         setStatus('error');
         setError(err?.response?.data?.detail || err?.message || 'Login failed');
       });
     
     return () => {
-      clearTimeout(timeoutId);
-      controller.abort();
+      loginAttempted.current = true;
     };
   }, []);
 

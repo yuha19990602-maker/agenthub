@@ -5,13 +5,13 @@
     "type": "direct_chat",
     "launch_mode": "native",
     "adapter": "opencode",
-    "group": "基础功能",
+    "group": "基础对话",
     "description": "通用 AI 对话助手，适用于日常问答和简单任务",
     "enabled": true,
     "tags": ["chat", "general"],
     "config": {
       "workspace_id": "default",
-      "model": "gpt-3.5-turbo",
+      "model": "default",
       "starter_prompts": ["你好", "帮我写一段Python代码", "解释一下这个概念"]
     },
     "sync_meta": {
@@ -53,7 +53,7 @@
       "base_url": "https://api.openai.com/v1",
       "request_path": "/chat/completions",
       "api_key_env": "OPENAI_API_KEY",
-      "model": "gpt-3.5-turbo",
+      "model": "gpt-4o-mini",
       "default_params": {
         "temperature": 0.7,
         "max_tokens": 2048
@@ -97,7 +97,7 @@
     "type": "iframe",
     "launch_mode": "iframe",
     "adapter": "iframe",
-    "group": "第三方工具",
+    "group": "集成应用",
     "description": "通过 iframe 嵌入的外部工具（示例）",
     "enabled": true,
     "tags": ["iframe", "external"],

@@ -77,15 +77,18 @@ class SimpleAPITester:
             )
             elapsed = (time.time() - start) * 1000
 
-            if response.status_code == 200:
-                # 检查是否设置了cookie
-                cookies = dict(response.cookies)
-                if "access_token" in cookies:
-                    data = response.json()
-                    user = data.get("user", {})
-                    self.log_result("模拟登录", "通过", f"用户: {user.get('name', 'Unknown')}", elapsed)
+            if response.status_code in (200, 302):
+                cookies = dict(client.cookies)
+                if "portal_sid" in cookies:
+                    if response.status_code == 200:
+                        data = response.json()
+                        user = data.get("user", {})
+                        user_name = user.get("name", "Unknown")
+                    else:
+                        user_name = "E10001"
+                    self.log_result("模拟登录", "通过", f"用户: {user_name}", elapsed)
                 else:
-                    self.log_result("模拟登录", "失败", "未设置access_token cookie", elapsed)
+                    self.log_result("模拟登录", "失败", "未设置portal_sid cookie", elapsed)
             else:
                 self.log_result("模拟登录", "失败", f"HTTP {response.status_code}", elapsed)
         except Exception as e:

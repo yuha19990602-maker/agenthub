@@ -5,8 +5,7 @@ import { BrowserRouter as Router, Routes, Route, useNavigate, useParams } from '
 import { User, LogOut, PanelRightOpen, PanelRightClose } from 'lucide-react';
 import { resourceApi, sessionApi, authApi } from './api';
 import { useAuth } from './auth/AuthProvider';
-import { DevAutoLogin } from './auth/DevAutoLogin';
-import type { Resource, LaunchResponse, SessionResumePayload } from './types';
+import type { Resource, LaunchResponse, SessionResumePayload, PortalSession } from './types';
 import { ResourceSidebar } from './components/ResourceSidebar';
 import { ChatInterface } from './components/ChatInterface';
 import { SessionSidebar } from './components/SessionSidebar';
@@ -209,11 +208,6 @@ function App() {
   }
 
   if (!user) {
-    // Development mode: auto login
-    if (import.meta.env.DEV) {
-      return <DevAutoLogin />;
-    }
-    
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
@@ -309,6 +303,8 @@ function App() {
                 <ChatRoutePage
                   resourcesGrouped={resourcesGrouped}
                   onResourceChange={setCurrentResource}
+                  onSelectSession={handleSelectSession}
+                  onNewChat={handleNewChat}
                 />
               }
             />
@@ -349,8 +345,8 @@ function MainContent({
   onNewChat,
   isLaunching,
 }: MainContentProps) {
-  const handleSessionSelect = (sessionId: string) => {
-    onSelectSession(sessionId);
+  const handleSessionSelect = (session: PortalSession) => {
+    onSelectSession(session.portal_session_id);
   };
 
   if (isLaunching) {
@@ -442,22 +438,35 @@ function MainContent({
 function ChatRoutePage({
   resourcesGrouped,
   onResourceChange,
+  onSelectSession,
+  onNewChat,
 }: {
   resourcesGrouped: Record<string, Resource[]>;
   onResourceChange: (resource: Resource) => void;
+  onSelectSession: (sessionId: string) => void;
+  onNewChat: () => void;
 }) {
   const { sessionId } = useParams();
   const [resource, setResource] = useState<Resource | null>(null);
 
   useEffect(() => {
-    if (sessionId) {
-      const allResources = Object.values(resourcesGrouped).flat();
-      if (allResources.length > 0) {
-        const defaultRes = allResources.find((r) => r.id === DEFAULT_RESOURCE_ID) || allResources[0];
-        setResource(defaultRes);
-        onResourceChange(defaultRes);
+    const loadSessionResource = async () => {
+      if (!sessionId) return;
+      try {
+        const sessionRes = await sessionApi.getSession(sessionId);
+        const session = sessionRes.data;
+        const allResources = Object.values(resourcesGrouped).flat();
+        const matchedResource = allResources.find((item) => item.id === session.resource_id);
+        if (matchedResource) {
+          setResource(matchedResource);
+          onResourceChange(matchedResource);
+        }
+      } catch (error) {
+        console.error('Failed to load chat route session:', error);
       }
-    }
+    };
+
+    void loadSessionResource();
   }, [sessionId, resourcesGrouped, onResourceChange]);
 
   if (!sessionId) return null;
@@ -467,8 +476,8 @@ function ChatRoutePage({
       <div className="w-64 border-r bg-white hidden lg:flex flex-col">
         <SessionSidebar
           currentSessionId={sessionId}
-          onSelectSession={() => {}}
-          onNewChat={() => {}}
+          onSelectSession={(session) => onSelectSession(session.portal_session_id)}
+          onNewChat={onNewChat}
         />
       </div>
       <div className="flex-1">

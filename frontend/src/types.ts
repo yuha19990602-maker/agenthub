@@ -86,6 +86,8 @@ export interface PortalSession {
   last_message_preview?: string;
   parent_session_id?: string;
   metadata?: Record<string, any>;
+  adapter?: AdapterType;
+  mode?: 'native' | 'embedded';
 }
 
 export interface SessionBinding {

@@ -6,23 +6,18 @@ Pulls skills from OpenWork, merges them with static resources and overrides,
 and writes a unified resources.generated.json that the CatalogService consumes.
 """
 
-import asyncio
 import json
 import logging
 import sys
-import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 # Allow importing backend modules when script is run from repo root
 BACKEND_DIR = Path(__file__).parent.parent / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
 
 from app.adapters.openwork import OpenWorkAdapter
-from app.catalog.service import CatalogService
-from app.models import Resource, ResourceConfig, ResourceSyncMeta
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("sync_resources")
 
@@ -137,24 +132,8 @@ def merge_resources(
     return list(by_id.values())
 
 
-async def sync_resources(
-    workspace_id: str = "default",
-    reload_catalog: bool = True,
-) -> List[Dict[str, Any]]:
-    """
-    Main sync routine.
-    1. Discover skills from OpenWork
-    2. Load static resources and overrides
-    3. Merge and write generated file
-    4. Optionally reload catalog service cache
-    """
-    openwork = OpenWorkAdapter()
-
-    try:
-        skills = await openwork.list_skills(workspace_id=workspace_id)
-    finally:
-        await openwork.close()
-
+def build_generated_resources(skills: List[Dict[str, Any]], workspace_id: str = "default") -> List[Dict[str, Any]]:
+    """Build merged generated resources from OpenWork skills and local config."""
     discovered = [normalize_skill(s, workspace_id) for s in skills]
     logger.info(f"Discovered {len(discovered)} skills from workspace '{workspace_id}'")
 
@@ -163,30 +142,31 @@ async def sync_resources(
 
     merged = merge_resources(static_resources, discovered, overrides)
     logger.info(f"Merged total resources: {len(merged)}")
-
-    write_json(GENERATED_PATH, merged)
-
-    if reload_catalog:
-        # Force catalog service to reload from the new generated file
-        catalog_service.resources_path = GENERATED_PATH
-        catalog_service.get_resources(force_reload=True)
-        logger.info("Catalog service cache reloaded")
-
     return merged
+
+def write_generated_resources(items: List[Dict[str, Any]], output_path: Path = GENERATED_PATH) -> None:
+    """Write generated resources to disk."""
+    write_json(output_path, items)
 
 
 def main():
     import argparse
+    import asyncio
 
     parser = argparse.ArgumentParser(description="Sync skills from OpenWork into Portal resource catalog")
     parser.add_argument("--workspace", default="default", help="OpenWork workspace ID")
-    parser.add_argument("--no-reload", action="store_true", help="Skip reloading catalog cache")
     args = parser.parse_args()
 
-    merged = asyncio.run(sync_resources(
-        workspace_id=args.workspace,
-        reload_catalog=not args.no_reload,
-    ))
+    async def _run() -> List[Dict[str, Any]]:
+        openwork = OpenWorkAdapter()
+        try:
+            skills = await openwork.list_skills(workspace_id=args.workspace)
+        finally:
+            await openwork.close()
+        return build_generated_resources(skills=skills, workspace_id=args.workspace)
+
+    merged = asyncio.run(_run())
+    write_generated_resources(merged, GENERATED_PATH)
 
     logger.info(f"Sync complete. {len(merged)} resources in generated catalog.")
 

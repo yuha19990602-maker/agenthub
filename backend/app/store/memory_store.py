@@ -411,12 +411,13 @@ class MemoryStore:
     # Auth Session operations (V2)
     async def save_auth_session(self, session: AuthSession) -> AuthSession:
         """Save authentication session"""
+        import time
         async with self._lock:
             self._auth_sessions[session.session_id] = session
             
             # Cleanup expired sessions if over limit
             if len(self._auth_sessions) > self._max_auth_sessions:
-                now = int(asyncio.get_event_loop().time())
+                now = int(time.time())
                 expired = [
                     sid for sid, s in self._auth_sessions.items()
                     if s.expires_at < now

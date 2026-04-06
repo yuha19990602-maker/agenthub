@@ -83,6 +83,7 @@ const getResourceIcon = (resource: Resource): React.ReactNode => {
       if (resource.type === 'skill_chat') return <Bot className={iconClass} />;
       if (resource.type === 'kb_websdk') return <BookOpen className={iconClass} />;
       if (resource.type === 'agent_websdk') return <Zap className={iconClass} />;
+      if (resource.type === 'openai_compatible_v1') return <Cpu className={iconClass} />;
       return <Sparkles className={iconClass} />;
   }
 };
@@ -107,6 +108,9 @@ const getResourceIconBg = (resource: Resource): string => {
     case 'op-agent':
       return 'bg-gradient-to-br from-indigo-400 to-indigo-600';
     default:
+      if (resource.type === 'openai_compatible_v1') {
+        return 'bg-gradient-to-br from-slate-500 to-slate-700';
+      }
       return 'bg-gradient-to-br from-gray-400 to-gray-600';
   }
 };

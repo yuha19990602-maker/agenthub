@@ -1,57 +1,54 @@
-# API 参考（当前实现）
+# API 参考（V2 当前实现）
 
 Base URL: `http://localhost:8000`
 
-认证方式：`access_token`（HTTP-only Cookie）
-
----
+认证方式：`portal_sid`（HTTP-only Cookie，本地 session）
 
 ## 1. 系统
 
 ### `GET /api/health`
-健康检查。
 
-响应示例：
 ```json
 {
   "status": "healthy",
   "portal_name": "AI Portal",
-  "version": "1.0.0"
+  "version": "2.0.0"
 }
 ```
-
----
 
 ## 2. 认证
 
-### `GET /api/auth/mock-login?emp_no=E10001`
-Mock 登录，设置 Cookie。
+### `GET /api/auth/login-url?next=/`
+获取 SSO 登录地址。开发环境且启用 mock-login 时，可能返回 `/api/auth/mock-login?...`。
 
-响应示例：
+### `POST /api/auth/exchange`
+用 `code/state` 换本地 session。
+
+请求体：
+
 ```json
 {
-  "message": "Login successful",
-  "redirect": "/",
-  "user": {
-    "emp_no": "E10001",
-    "name": "User-E10001",
-    "dept": "demo"
-  }
+  "code": "authorization-code",
+  "state": "opaque-state"
 }
 ```
+
+### `GET /api/auth/callback?code=...&state=...`
+SSO 后端回调入口，成功后设置 `portal_sid` 并重定向。
 
 ### `GET /api/auth/me`
 返回当前登录用户信息。
 
 ### `POST /api/auth/logout`
-清除登录 Cookie。
+删除本地 session 并清除 `portal_sid`。
 
----
+### `GET /api/auth/mock-login?emp_no=E10001`
+仅 `ENV=dev && ENABLE_MOCK_LOGIN=true` 可用。
 
 ## 3. 资源
 
 ### `GET /api/resources`
-返回当前用户可访问资源（ACL 过滤后）。
+返回 ACL 过滤后的资源列表。
 
 ### `GET /api/resources/grouped`
 按 `group` 分组返回资源。
@@ -62,173 +59,126 @@ Mock 登录，设置 Cookie。
 ### `POST /api/resources/{resource_id}/launch`
 启动资源。
 
-- native 资源响应：
+native 返回示例：
+
 ```json
 {
   "kind": "native",
-  "portal_session_id": "uuid"
+  "portal_session_id": "uuid",
+  "adapter": "opencode",
+  "mode": "native"
 }
 ```
 
-- websdk 资源响应：
+embedded 返回示例：
+
 ```json
 {
   "kind": "websdk",
-  "launch_id": "uuid"
+  "portal_session_id": "uuid",
+  "launch_id": "uuid",
+  "adapter": "websdk",
+  "mode": "embedded"
 }
 ```
 
----
-
-## 4. 会话（native/skill）
+## 4. 会话
 
 ### `GET /api/sessions?limit=50&resource_id=&type=&status=`
-获取当前用户会话列表。支持按 `resource_id`、`type`（资源类型）、`status`（active/archived）过滤。
+返回当前用户会话列表，附带 `adapter` 和 `mode`。
 
-响应示例：
+### `GET /api/sessions/{portal_session_id}`
+返回单个会话详情。
+
+### `GET /api/sessions/{portal_session_id}/resume`
+统一恢复入口。
+
 ```json
 {
-  "sessions": [
-    {
-      "portal_session_id": "uuid",
-      "resource_id": "general-chat",
-      "resource_type": "direct_chat",
-      "resource_name": "通用助手",
-      "user_emp_no": "E10001",
-      "title": "通用助手",
-      "status": "active",
-      "resource_snapshot": { "resource_id": "general-chat", "resource_name": "通用助手", ... },
-      "created_at": "2026-03-26T12:00:00",
-      "updated_at": "2026-03-26T12:05:00",
-      "last_message_at": "2026-03-26T12:05:00",
-      "last_message_preview": "你好",
-      "metadata": { "adapter": "opencode" }
-    }
-  ]
+  "portal_session_id": "uuid",
+  "resource_id": "general-chat",
+  "title": "通用对话",
+  "adapter": "opencode",
+  "mode": "native",
+  "launch_id": null,
+  "show_chat_history": true,
+  "show_workspace": false
 }
 ```
 
 ### `GET /api/sessions/{portal_session_id}/messages`
-返回会话消息。优先读取 Portal 本地持久化的 `PortalMessage`；若本地为空（如迁移场景），则回源 OpenCode 引擎并自动回填到本地存储。
-
-```json
-[
-  {
-    "role": "user",
-    "text": "你好",
-    "timestamp": "2026-03-26T12:00:00"
-  }
-]
-```
+优先读取 Portal 本地消息；本地为空时，`opencode/skill_chat` 会回源并回填。
 
 ### `POST /api/sessions/{portal_session_id}/messages`
-发送消息（非流式）。后端会：
-1. 保存 user `PortalMessage`
-2. 通过 `SessionBinding` 调用对应 adapter
-3. 保存 assistant `PortalMessage`
-4. 更新会话 `last_message_preview` 和 `updated_at`
+非流式发送消息。
 
 请求体：
+
 ```json
 { "text": "你好" }
 ```
 
 响应体：
+
 ```json
-{ "response": "...assistant text..." }
+{ "response": "你好，我可以帮你什么？", "message_id": "uuid" }
 ```
 
 ### `POST /api/sessions/{portal_session_id}/messages/stream`
-发送消息（SSE 流式）。流结束后会将完整 assistant 内容持久化为 `PortalMessage`。
+SSE 流式发送消息。
+
+事件格式：
+
+```text
+data: {"type":"start","message_id":"uuid"}
+data: {"type":"delta","message_id":"uuid","content":"你"}
+data: {"type":"delta","message_id":"uuid","content":"好"}
+data: {"type":"done","message_id":"uuid","finish_reason":"stop"}
+```
 
 ### `POST /api/sessions/{portal_session_id}/archive`
 归档会话。
 
-响应体：
-```json
-{ "success": true, "status": "archived" }
-```
+### `POST /api/sessions/{portal_session_id}/upload`
+上传文件到 native 会话。`openai_compatible` 当前不支持文件上传。
 
 ### `GET /api/sessions/{portal_session_id}/context`
-获取该会话的合并上下文（global + user + user_resource + session）。
+返回 `global < user < user_resource < session` 合并后的上下文。
 
-响应体：
-```json
-{
-  "portal_session_id": "uuid",
-  "scopes": {
-    "global": {},
-    "user": {},
-    "user_resource": {},
-    "session": {}
-  },
-  "merged": {}
-}
-```
+## 5. Launch / Workspace
 
----
-
-## 5. WebSDK 启动记录
-
-### `GET /api/launches?limit=50`
-获取当前用户最近 WebSDK 启动记录。
+### `GET /api/launches`
+列出当前用户最近启动记录。
 
 ### `GET /api/launches/{launch_id}/embed-config`
-获取嵌入配置：
-```json
-{
-  "script_url": "http://host/resources/.../embedLite.js",
-  "app_key": "xxx",
-  "base_url": "http://host/agent/chat",
-  "launch_token": "token",
-  "user_context": {
-    "emp_no": "E10001"
-  }
-}
-```
+返回 WebSDK 嵌入配置。
 
----
+### `GET /api/launches/{launch_id}/iframe-config`
+返回 iframe 嵌入配置。
 
-## 6. Skill 商店
-
-### `GET /api/skills`
-返回 Skill 资源与安装状态。
-
-字段包含：
-- `id/name/description`
-- `skill_name`
-- `starter_prompts`
-- `installed`
-
-## 7. 上下文管理
+## 6. Context
 
 ### `PATCH /api/contexts/user-resource/{resource_id}`
-更新当前用户在指定资源下的上下文。
+更新当前用户在指定资源上的 `user_resource` 上下文。
 
 请求体：
+
 ```json
 {
-  "payload": { "preference": "dark_mode" },
-  "summary": "用户偏好深色模式"
+  "payload": { "tone": "concise" },
+  "summary": "用户偏好简洁回答"
 }
 ```
 
-响应体：
-```json
-{ "success": true, "context_id": "uuid" }
-```
+## 7. Skills
 
-## 8. 管理接口
+### `GET /api/skills`
+返回 skill 资源以及 OpenWork 安装状态。
+
+## 8. Admin
 
 ### `POST /api/admin/resources/sync?workspace_id=default`
-触发从 OpenWork 同步技能并重新生成 `resources.generated.json`。
-
-响应体：
-```json
-{ "success": true, "count": 8, "workspace_id": "default" }
-```
-
----
+Admin-only。触发从 OpenWork 同步技能并 reload catalog。
 
 ## 9. OpenAPI
 

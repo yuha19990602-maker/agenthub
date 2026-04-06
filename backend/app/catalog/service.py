@@ -4,6 +4,7 @@ import json
 import logging
 from typing import List, Dict, Any, Optional
 from pathlib import Path
+from fastapi import HTTPException, status
 
 from ..models import Resource, ResourceType, LaunchMode
 from ..acl.service import acl_service
@@ -64,6 +65,25 @@ class CatalogService:
             if resource.id == resource_id:
                 return resource
         return None
+
+    def get_resource_or_none(self, resource_id: str) -> Optional[Resource]:
+        """Alias helper for clearer call sites."""
+        return self.get_resource_by_id(resource_id)
+
+    def get_resource_or_raise(self, resource_id: str) -> Resource:
+        """Get resource by ID or raise 404."""
+        resource = self.get_resource_by_id(resource_id)
+        if not resource:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Resource not found: {resource_id}",
+            )
+        return resource
+
+    def reload_generated_resources(self) -> List[Resource]:
+        """Reload generated resource catalog from disk."""
+        self._resources = None
+        return self.get_resources(force_reload=True)
 
     def get_resources_by_group(self) -> Dict[str, List[Resource]]:
         """

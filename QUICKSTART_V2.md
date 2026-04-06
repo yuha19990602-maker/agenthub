@@ -1,158 +1,179 @@
-# AI Portal V2 快速启动指南 (Fake SSO 模式)
+# AI Portal V2 快速启动
 
-本指南帮助你在没有真实 SSO 基础设施的情况下快速启动 AI Portal V2 进行测试。
+本指南基于当前代码实现，覆盖两种本地模式：
 
-## 特性
+- `dev + mock-login`：本地开发最快路径
+- `dev/prod + 真实 SSO`：接入真实身份系统
 
-- ✅ **Fake SSO 模式** - 无需配置真实 SSO，任何授权码都会被接受
-- ✅ **完整功能** - 除真实 SSO 验证外，所有功能均可测试
-- ✅ **默认用户** - 自动登录为 E10001 (测试用户，拥有 admin 角色)
-- ✅ **示例资源** - 包含 direct_chat, skill_chat, openai_compatible_v1, websdk, iframe 等类型
+OpenCode / OpenWork 可独立运行在本机：
 
-## 环境要求
+- OpenCode: `http://127.0.0.1:4096`
+- OpenWork: `http://127.0.0.1:8787`
 
-- Python 3.12+
-- Node.js 18+
-- (可选) OpenCode 服务 - 用于 native chat 功能
-- (可选) OpenWork 服务 - 用于技能管理
+## 1. 准备配置
 
-## 快速启动
+### 后端 `backend/.env`
 
-### 1. 使用一键启动脚本
+开发模式最小配置：
 
-```bash
-./scripts/start_dev.sh
+```env
+ENV=dev
+ENABLE_MOCK_LOGIN=true
+COOKIE_SECURE=false
+SESSION_MAX_AGE_SEC=86400
+
+SSO_AUTHORIZE_URL=
+SSO_TOKEN_URL=
+SSO_CLIENT_ID=
+SSO_CLIENT_SECRET=
+SSO_REDIRECT_URI=http://localhost:8000/api/auth/callback
+SSO_JWKS_URL=
+
+OPENCODE_BASE_URL=http://127.0.0.1:4096
+OPENCODE_USERNAME=opencode
+OPENCODE_PASSWORD=your-password
+
+OPENWORK_BASE_URL=http://127.0.0.1:8787
+OPENWORK_TOKEN=your-token
+
+PORTAL_NAME=AI Portal
+RESOURCES_PATH=config/resources.generated.json
 ```
 
-这个脚本会：
-1. 检查并安装依赖
-2. 启动后端服务 (http://localhost:8000)
-3. 启动前端服务 (http://localhost:5173)
+说明：
 
-### 2. 手动启动
+- 若未配置真实 SSO 且启用了 `ENABLE_MOCK_LOGIN=true`，前端会从 `/api/auth/login-url` 获取 dev mock 登录地址。
+- 若接入真实 SSO，填上 SSO 相关配置即可，Portal 仍使用本地 `portal_sid` session。
 
-**后端:**
+### 前端 `frontend/.env`
+
+```env
+VITE_API_BASE_URL=/
+VITE_APP_NAME=AI Portal
+```
+
+## 2. 启动服务
+
+### 一键启动
+
+```bash
+./scripts/start.sh
+```
+
+### 分别启动
+
+后端：
+
 ```bash
 cd backend
-python3 -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+/home/yy/python312/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-**前端:**
+前端：
+
 ```bash
 cd frontend
 npm run dev
 ```
 
-## 访问应用
+## 3. 访问地址
 
-- **前端界面**: http://localhost:5173
-- **后端 API**: http://localhost:8000
-- **API 文档**: http://localhost:8000/docs
+- 前端：`http://localhost:5173`
+- 后端：`http://localhost:8000`
+- OpenAPI：`http://localhost:8000/docs`
 
-## Fake SSO 工作原理
+## 4. 推荐联调检查
 
-当 `SSO_AUTHORIZE_URL` 和 `SSO_TOKEN_URL` 为空时，系统自动启用 Fake SSO 模式：
+### 登录
 
-1. 用户访问前端，未登录
-2. 前端调用 `/api/auth/login-url` 获取登录地址
-3. Fake SSO 直接返回回调 URL（带授权码）
-4. 前端使用授权码调用 `/api/auth/exchange`
-5. 后端接受任何授权码，创建本地会话
-6. 用户自动登录为默认测试用户
+开发模式：
 
-### 默认测试用户信息
-
-```json
-{
-  "emp_no": "E10001",
-  "name": "测试用户",
-  "dept": "Engineering",
-  "roles": ["employee", "admin"],
-  "email": "test@company.com"
-}
+```bash
+curl -i "http://127.0.0.1:8000/api/auth/mock-login?emp_no=E10001"
 ```
 
-## 测试不同功能
+应看到 `Set-Cookie: portal_sid=...`
 
-### 1. Native Chat (通用对话)
-- 点击左侧"基础功能"->"通用对话"
-- 无需 OpenCode 也可测试界面，但对话功能需要 OpenCode 服务
+### 健康检查
 
-### 2. OpenAI Compatible 资源
-- 点击左侧"模型资源"->"OpenAI 兼容模型"
-- 配置实际的 API Key 后可测试:
-  ```bash
-  export OPENAI_API_KEY=your-key-here
-  ```
-
-### 3. WebSDK/Iframe 资源
-- 点击对应资源会显示工作区
-- 由于使用示例 URL，可能显示加载失败（这是正常的）
-
-### 4. 会话恢复
-- 创建会话后，刷新页面
-- 点击左侧会话列表中的历史会话
-- 系统会正确恢复会话状态
-
-## 配置说明
-
-### 后端配置 (backend/.env)
-
-```env
-# 启用 Fake SSO（留空即可）
-SSO_AUTHORIZE_URL=
-SSO_TOKEN_URL=
-
-# 其他配置
-ENV=dev
-ENABLE_MOCK_LOGIN=true
-COOKIE_SECURE=false
+```bash
+curl http://127.0.0.1:8000/api/health
+curl http://127.0.0.1:5173/api/health
 ```
 
-### 前端配置 (frontend/.env)
+第二个请求会经过前端 Vite 代理。
 
-```env
-VITE_API_BASE_URL=http://localhost:8000
+### OpenWork 联调
+
+```bash
+curl -b cookies.txt http://127.0.0.1:8000/api/skills
 ```
 
-## 切换到真实 SSO
+### OpenCode 联调
 
-当需要测试真实 SSO 时:
+1. 启动 native 资源
 
-1. 编辑 `backend/.env`，填入真实 SSO 配置:
+```bash
+curl -X POST -b cookies.txt http://127.0.0.1:8000/api/resources/general-chat/launch
+```
+
+2. 非流式发消息
+
+```bash
+curl -X POST -b cookies.txt \
+  -H "Content-Type: application/json" \
+  http://127.0.0.1:8000/api/sessions/{session_id}/messages \
+  -d '{"text":"请用一句中文回复：联调成功。"}'
+```
+
+3. 流式发消息
+
+```bash
+curl -N -X POST -b cookies.txt \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  http://127.0.0.1:8000/api/sessions/{session_id}/messages/stream \
+  -d '{"text":"请只输出两个字：收到"}'
+```
+
+## 5. 切换到真实 SSO
+
+把以下字段填完整后重启后端：
+
 ```env
-SSO_AUTHORIZE_URL=https://your-sso.com/oauth/authorize
-SSO_TOKEN_URL=https://your-sso.com/oauth/token
+SSO_AUTHORIZE_URL=https://your-sso.example.com/oauth/authorize
+SSO_TOKEN_URL=https://your-sso.example.com/oauth/token
 SSO_CLIENT_ID=your-client-id
 SSO_CLIENT_SECRET=your-client-secret
+SSO_JWKS_URL=https://your-sso.example.com/.well-known/jwks.json
+COOKIE_SECURE=true
 ```
 
-2. 重启后端服务
+生产环境还需要：
 
-3. 系统将自动切换到真实 SSO 模式
+```env
+ENV=prod
+ENABLE_MOCK_LOGIN=false
+```
 
-## 常见问题
+## 6. 常见问题
 
-### Q: 启动时报 "Resources file not found"
-A: 确保 `config/resources.generated.json` 存在，或运行资源同步脚本。
+### 登录后仍 401
 
-### Q: 无法登录 / 鉴权失败
-A: 检查后端日志是否显示 "Fake SSO mode enabled"。如果显示，说明 Fake SSO 已启用。
+- 检查浏览器是否拿到了 `portal_sid`
+- 检查 `COOKIE_SECURE` 与实际访问协议是否匹配
 
-### Q: 前端显示 "无法连接到后端"
-A: 确保后端服务已启动，且 `VITE_API_BASE_URL` 配置正确。
+### Native chat launch 成功但发消息失败
 
-### Q: 会话恢复失败
-A: 检查后端日志，确认 `GET /api/sessions/{id}/resume` 返回正确数据。
+- 检查 `OPENCODE_BASE_URL / OPENCODE_USERNAME / OPENCODE_PASSWORD`
+- 查看 `logs/backend.log`
 
-## 生产环境注意事项
+### `/api/skills` 返回空或 installed 异常
 
-**警告**: Fake SSO 模式仅供开发和测试使用！
+- 检查 `OPENWORK_BASE_URL / OPENWORK_TOKEN`
+- 直接访问 OpenWork 确认服务已启动
 
-生产环境必须:
-1. 配置真实 SSO 端点
-2. 设置 `ENV=prod`
-3. 禁用 `ENABLE_MOCK_LOGIN`
-4. 启用 `COOKIE_SECURE=true` (HTTPS)
+### 流式请求无返回
 
-启动时会自动检查这些配置，不符合要求会拒绝启动。
+- 确认前端使用 `VITE_API_BASE_URL=/`
+- 确认浏览器请求走的是 `/api/...` 而不是错误拼接的绝对地址
