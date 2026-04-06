@@ -1,7 +1,23 @@
-/** Type definitions for AI Portal */
+/** Type definitions for AI Portal V2 */
 
-export type ResourceType = 'direct_chat' | 'skill_chat' | 'kb_websdk' | 'agent_websdk' | 'iframe';
+export type ResourceType =
+  | 'direct_chat'
+  | 'skill_chat'
+  | 'kb_websdk'
+  | 'agent_websdk'
+  | 'iframe'
+  | 'openai_compatible_v1';
+
 export type LaunchMode = 'native' | 'websdk' | 'iframe';
+
+export type AdapterType =
+  | 'opencode'
+  | 'skill_chat'
+  | 'websdk'
+  | 'iframe'
+  | 'openai_compatible';
+
+export type MessageStatus = 'streaming' | 'done' | 'error';
 
 export interface UserCtx {
   emp_no: string;
@@ -19,8 +35,16 @@ export interface ResourceConfig {
   base_url?: string;
   skill_name?: string;
   starter_prompts?: string[];
-  iframe_url?: string;  // Direct iframe URL for iframe mode
-  [key: string]: any;  // Allow additional config properties
+  iframe_url?: string;
+  // OpenAI Compatible v1 config
+  request_path?: string;
+  api_key_env?: string;
+  headers?: Record<string, string>;
+  default_params?: Record<string, any>;
+  history_window?: number;
+  stream_supported?: boolean;
+  timeout_sec?: number;
+  [key: string]: any;
 }
 
 export interface ResourceSyncMeta {
@@ -37,6 +61,7 @@ export interface Resource {
   name: string;
   type: ResourceType;
   launch_mode: LaunchMode;
+  adapter?: AdapterType;
   group: string;
   description: string;
   enabled: boolean;
@@ -60,16 +85,14 @@ export interface PortalSession {
   last_message_at?: string;
   last_message_preview?: string;
   parent_session_id?: string;
-  metadata: {
-    adapter: string;
-  };
+  metadata?: Record<string, any>;
 }
 
 export interface SessionBinding {
   binding_id: string;
   portal_session_id: string;
   engine_type: string;
-  adapter: string;
+  adapter: AdapterType;
   engine_session_id?: string;
   external_session_ref?: string;
   workspace_id?: string;
@@ -88,6 +111,12 @@ export interface PortalMessage {
   trace_id?: string;
   created_at: string;
   metadata?: Record<string, any>;
+  // V2 fields
+  status?: MessageStatus;
+  dedupe_key?: string;
+  source_provider?: string;
+  source_message_id?: string;
+  seq?: number;
 }
 
 export interface ContextScope {
@@ -97,6 +126,8 @@ export interface ContextScope {
   payload: Record<string, any>;
   summary?: string;
   updated_at: string;
+  updated_by?: string;
+  version?: number;
 }
 
 export interface LaunchRecord {
@@ -114,10 +145,19 @@ export interface Message {
   timestamp?: string;
 }
 
+// V2 Unified Stream Event Format
+export type StreamEvent =
+  | { type: 'start'; message_id: string }
+  | { type: 'delta'; message_id: string; content: string }
+  | { type: 'done'; message_id: string; finish_reason?: string }
+  | { type: 'error'; message_id?: string; content: string };
+
+// Legacy StreamChunk for backward compatibility during migration
 export interface StreamChunk {
-  type: 'start' | 'chunk' | 'done' | 'error';
+  type: 'start' | 'chunk' | 'delta' | 'done' | 'error';
   content?: string;
   message_id?: string;
+  finish_reason?: string;
 }
 
 export interface PendingFile {
@@ -131,6 +171,8 @@ export interface LaunchResponse {
   kind: LaunchMode;
   portal_session_id?: string;
   launch_id?: string;
+  adapter?: AdapterType;
+  mode?: 'native' | 'embedded';
 }
 
 export interface SkillInfo {
@@ -153,4 +195,34 @@ export interface EmbedConfig {
 export interface IframeConfig {
   iframe_url: string;
   user_context: any;
+}
+
+// V2 Session Resume
+export interface SessionResumePayload {
+  portal_session_id: string;
+  resource_id: string;
+  title: string;
+  adapter: AdapterType;
+  mode: 'native' | 'embedded';
+  launch_id?: string | null;
+  show_chat_history: boolean;
+  show_workspace: boolean;
+}
+
+// V2 Stream Handlers
+export interface StreamHandlers {
+  onStart?: (messageId: string) => void;
+  onDelta: (delta: string, messageId: string) => void;
+  onDone?: (messageId: string) => void;
+  onError?: (error: string, messageId?: string) => void;
+}
+
+// Session Summary for sidebar
+export interface SessionSummary {
+  portal_session_id: string;
+  title: string;
+  resource_id: string;
+  adapter: AdapterType;
+  mode: 'native' | 'embedded';
+  updated_at: number;
 }

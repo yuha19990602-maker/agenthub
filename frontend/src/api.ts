@@ -1,4 +1,4 @@
-/** API client for AI Portal backend */
+/** API client for AI Portal backend - V2 */
 
 import axios from 'axios';
 import type {
@@ -10,42 +10,63 @@ import type {
   SkillInfo,
   EmbedConfig,
   IframeConfig,
-  StreamChunk,
-  ContextScope,
+  StreamEvent,
+  SessionResumePayload,
+  StreamHandlers,
 } from './types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  withCredentials: true, // Send cookies
+  withCredentials: true, // Send cookies (portal_sid)
   headers: {
     'Content-Type': 'application/json',
   },
 });
 
-// Auth APIs
+// Auth APIs - V2 (SSO + Local Session)
 export const authApi = {
+  /** Get SSO login URL */
+  getLoginUrl: (next: string = '/') =>
+    api.get<{ login_url: string }>(`/api/auth/login-url?next=${encodeURIComponent(next)}`),
+
+  /** Exchange OAuth2 code for local session */
+  exchangeCode: (code: string, state?: string | null) =>
+    api.post<{ user: any; next: string }>('/api/auth/exchange', { code, state }),
+
+  /** Get current user info (validates portal_sid cookie) */
+  getMe: () => api.get<{ emp_no: string; name: string; dept: string; roles: string[]; email?: string }>('/api/auth/me'),
+
+  /** Logout - clears portal_sid cookie and server session */
+  logout: () => api.post<{ success: boolean }>('/api/auth/logout'),
+
+  /** Redirect to SSO login */
+  redirectToSSO: (next: string = '/') => {
+    authApi.getLoginUrl(next).then((res) => {
+      window.location.href = res.data.login_url;
+    }).catch((err) => {
+      console.error('Failed to get login URL:', err);
+      // Fallback for dev mode
+      if (import.meta.env.DEV) {
+        window.location.href = `/api/auth/mock-login?emp_no=E10001&next=${encodeURIComponent(next)}`;
+      }
+    });
+  },
+
+  // Legacy - kept for dev mode fallback
   mockLogin: (empNo: string) =>
     api.get(`/api/auth/mock-login?emp_no=${empNo}`),
-
-  getMe: () =>
-    api.get<any>('/api/auth/me'),
-
-  logout: () =>
-    api.post('/api/auth/logout'),
 };
 
 // Resource APIs
 export const resourceApi = {
-  listResources: () =>
-    api.get<Resource[]>('/api/resources'),
+  listResources: () => api.get<Resource[]>('/api/resources'),
 
   listResourcesGrouped: () =>
     api.get<Record<string, Resource[]>>('/api/resources/grouped'),
 
-  getResource: (id: string) =>
-    api.get<Resource>(`/api/resources/${id}`),
+  getResource: (id: string) => api.get<Resource>(`/api/resources/${id}`),
 
   launchResource: (id: string) =>
     api.post<LaunchResponse>(`/api/resources/${id}/launch`),
@@ -73,11 +94,18 @@ export const sessionApi = {
     return api.get<{ sessions: PortalSession[] }>(`/api/sessions${query ? '?' + query : ''}`);
   },
 
+  getSession: (sessionId: string) =>
+    api.get<PortalSession>(`/api/sessions/${sessionId}`),
+
+  /** V2: Get session resume payload for restoration */
+  getSessionResume: (sessionId: string) =>
+    api.get<SessionResumePayload>(`/api/sessions/${sessionId}/resume`),
+
   getMessages: (sessionId: string) =>
     api.get<Message[]>(`/api/sessions/${sessionId}/messages`),
 
   sendMessage: (sessionId: string, text: string) =>
-    api.post<{ response: string }>(`/api/sessions/${sessionId}/messages`, { text }),
+    api.post<{ response: string; message_id?: string }>(`/api/sessions/${sessionId}/messages`, { text }),
 
   archiveSession: (sessionId: string) =>
     api.post<{ success: boolean; status: string }>(`/api/sessions/${sessionId}/archive`),
@@ -87,23 +115,24 @@ export const sessionApi = {
       portal_session_id: string;
       scopes: Record<string, Record<string, any>>;
       merged: Record<string, any>;
+      priority: string[];
     }>(`/api/sessions/${sessionId}/context`),
 
   /**
-   * Send message with streaming response using SSE
+   * V2: Send message with streaming response using SSE.
+   * Uses unified event format: start, delta, done, error.
+   * Calls handlers.onDone exactly once.
    */
   sendMessageStream: (
     sessionId: string,
     text: string,
-    onChunk: (chunk: string, messageId: string) => void,
-    onDone: (messageId: string) => void,
-    onError: (error: string) => void
+    handlers: StreamHandlers
   ): AbortController => {
     const controller = new AbortController();
     const { signal } = controller;
 
     const url = `${API_BASE_URL}api/sessions/${sessionId}/messages/stream`;
-    
+
     fetch(url, {
       method: 'POST',
       headers: {
@@ -127,6 +156,7 @@ export const sessionApi = {
         const decoder = new TextDecoder();
         let buffer = '';
         let currentMessageId = '';
+        let doneSeen = false;
 
         while (true) {
           const { done, value } = await reader.read();
@@ -142,27 +172,32 @@ export const sessionApi = {
 
             if (trimmedLine.startsWith('data: ')) {
               const dataStr = trimmedLine.slice(6);
-              
+
               if (dataStr === '[DONE]') {
-                onDone(currentMessageId);
+                // Legacy format - ignore, wait for proper done event
                 continue;
               }
 
               try {
-                const data: StreamChunk = JSON.parse(dataStr);
-                
+                const data: StreamEvent = JSON.parse(dataStr);
+
                 if (data.type === 'start') {
-                  currentMessageId = data.message_id || '';
-                } else if (data.type === 'chunk' && data.content) {
-                  onChunk(data.content, data.message_id || currentMessageId);
+                  currentMessageId = data.message_id;
+                  handlers.onStart?.(currentMessageId);
+                } else if (data.type === 'delta') {
+                  handlers.onDelta(data.content ?? '', data.message_id || currentMessageId);
                 } else if (data.type === 'done') {
-                  onDone(data.message_id || currentMessageId);
+                  if (!doneSeen) {
+                    doneSeen = true;
+                    handlers.onDone?.(data.message_id || currentMessageId);
+                  }
                 } else if (data.type === 'error') {
-                  onError(data.content || 'Unknown error');
+                  handlers.onError?.(data.content || 'Unknown error', data.message_id);
+                  return;
                 }
               } catch (e) {
-                // If not valid JSON, treat as plain text chunk
-                onChunk(dataStr, currentMessageId);
+                // If not valid JSON, ignore (old format compatibility)
+                console.warn('Failed to parse SSE event:', dataStr);
               }
             }
           }
@@ -174,11 +209,15 @@ export const sessionApi = {
           if (trimmedBuffer.startsWith('data: ')) {
             const dataStr = trimmedBuffer.slice(6);
             try {
-              const data: StreamChunk = JSON.parse(dataStr);
+              const data: StreamEvent = JSON.parse(dataStr);
               if (data.type === 'done') {
-                onDone(data.message_id || currentMessageId);
+                if (!doneSeen) {
+                  doneSeen = true;
+                  handlers.onDone?.(data.message_id || currentMessageId);
+                }
               } else if (data.type === 'error') {
-                onError(data.content || 'Unknown error');
+                handlers.onError?.(data.content || 'Unknown error', data.message_id);
+                return;
               }
             } catch (e) {
               // Ignore parse errors at end
@@ -186,13 +225,16 @@ export const sessionApi = {
           }
         }
 
-        onDone(currentMessageId);
+        // Ensure onDone is called even if no explicit done event
+        if (!doneSeen) {
+          handlers.onDone?.(currentMessageId);
+        }
       })
       .catch((error) => {
         if (error.name === 'AbortError') {
           return;
         }
-        onError(error.message || 'Failed to send message');
+        handlers.onError?.(error.message || 'Failed to send message');
       });
 
     return controller;
@@ -222,8 +264,7 @@ export const contextApi = {
 
 // Skill APIs
 export const skillApi = {
-  listSkills: () =>
-    api.get<SkillInfo[]>('/api/skills'),
+  listSkills: () => api.get<SkillInfo[]>('/api/skills'),
 };
 
 export default api;

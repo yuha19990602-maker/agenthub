@@ -65,6 +65,23 @@ class ACLService:
             if self.check_resource_access(resource, user)
         ]
 
+    def check_admin(self, user: UserCtx) -> bool:
+        """
+        Check if user has admin role
+        """
+        return "admin" in user.roles
+
+    def require_resource_access(self, resource: Resource, user: UserCtx) -> None:
+        """
+        Require resource access, raise exception if denied
+        """
+        if not self.check_resource_access(resource, user):
+            from fastapi import HTTPException, status
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied to this resource"
+            )
+
 
 # Global ACL service instance
 acl_service = ACLService()

@@ -1,10 +1,11 @@
-/** Main application component with new layout */
+/** Main application component - V2 */
 
 import { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, useNavigate, useParams } from 'react-router-dom';
 import { User, LogOut, PanelRightOpen, PanelRightClose } from 'lucide-react';
-import { resourceApi, authApi, sessionApi } from './api';
-import type { Resource, UserCtx, LaunchResponse } from './types';
+import { resourceApi, sessionApi } from './api';
+import { useAuth } from './auth/AuthProvider';
+import type { Resource, LaunchResponse, SessionResumePayload } from './types';
 import { ResourceSidebar } from './components/ResourceSidebar';
 import { ChatInterface } from './components/ChatInterface';
 import { SessionSidebar } from './components/SessionSidebar';
@@ -15,21 +16,15 @@ import { IframeWorkspace } from './components/IframeWorkspace';
 const DEFAULT_RESOURCE_ID = 'general-chat';
 
 function App() {
-  const [user, setUser] = useState<UserCtx | null>(null);
+  const { user, loading: authLoading, logout } = useAuth();
   const [resourcesGrouped, setResourcesGrouped] = useState<Record<string, Resource[]>>({});
   const [currentResource, setCurrentResource] = useState<Resource | null>(null);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [currentLaunchId, setCurrentLaunchId] = useState<string | null>(null);
   const [showWorkspace, setShowWorkspace] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState<'websdk' | 'iframe' | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
   const [isLaunching, setIsLaunching] = useState(false);
   const navigate = useNavigate();
-
-  // Check auth on mount
-  useEffect(() => {
-    checkAuth();
-  }, []);
 
   // Load resources when authenticated
   useEffect(() => {
@@ -44,24 +39,6 @@ function App() {
       launchDefaultResource();
     }
   }, [resourcesGrouped]);
-
-  const checkAuth = async () => {
-    try {
-      const response = await authApi.getMe();
-      setUser(response.data);
-    } catch (error) {
-      console.log('Not authenticated, trying mock login...');
-      try {
-        await authApi.mockLogin('E10001');
-        const response = await authApi.getMe();
-        setUser(response.data);
-      } catch (loginError) {
-        console.error('Mock login failed:', loginError);
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   const loadResources = async () => {
     try {
@@ -97,11 +74,9 @@ function App() {
         });
         const recentSession = sessionsRes.data.sessions[0];
         if (recentSession) {
-          setCurrentSessionId(recentSession.portal_session_id);
-          setCurrentLaunchId(null);
-          setShowWorkspace(false);
-          setWorkspaceMode(null);
-          navigate('/');
+          // Use resume endpoint to properly restore session
+          const resumeRes = await sessionApi.getSessionResume(recentSession.portal_session_id);
+          applyResumePayload(resumeRes.data);
           setIsLaunching(false);
           return;
         }
@@ -110,26 +85,7 @@ function App() {
       // No recent session or non-native resource: create new launch/session
       const response = await resourceApi.launchResource(resource.id);
       const launchData: LaunchResponse = response.data;
-
-      if (launchData.kind === 'native' && launchData.portal_session_id) {
-        setCurrentSessionId(launchData.portal_session_id);
-        setCurrentLaunchId(null);
-        setShowWorkspace(false);
-        setWorkspaceMode(null);
-        navigate('/');
-      } else if (launchData.kind === 'websdk' && launchData.launch_id) {
-        setCurrentSessionId(null);
-        setCurrentLaunchId(launchData.launch_id);
-        setShowWorkspace(true);
-        setWorkspaceMode('websdk');
-        navigate('/');
-      } else if (launchData.kind === 'iframe' && launchData.launch_id) {
-        setCurrentSessionId(null);
-        setCurrentLaunchId(launchData.launch_id);
-        setShowWorkspace(true);
-        setWorkspaceMode('iframe');
-        navigate('/');
-      }
+      applyLaunchResponse(launchData);
     } catch (error: any) {
       console.error('Failed to launch resource:', error);
       alert(error.response?.data?.detail || '启动失败');
@@ -138,44 +94,77 @@ function App() {
     }
   };
 
+  /**
+   * V2: Apply session resume payload from backend
+   * This is the single source of truth for session restoration
+   */
+  const applyResumePayload = (resume: SessionResumePayload) => {
+    setCurrentSessionId(resume.portal_session_id);
+    
+    if (resume.mode === 'native') {
+      setCurrentLaunchId(null);
+      setWorkspaceMode(null);
+      setShowWorkspace(false);
+      navigate('/');
+    } else {
+      // Embedded mode
+      setCurrentLaunchId(resume.launch_id ?? null);
+      setWorkspaceMode(resume.adapter === 'iframe' ? 'iframe' : 'websdk');
+      setShowWorkspace(resume.show_workspace);
+      navigate('/');
+    }
+  };
+
+  /**
+   * Apply launch response
+   */
+  const applyLaunchResponse = (launchData: LaunchResponse) => {
+    if (launchData.mode === 'native' && launchData.portal_session_id) {
+      setCurrentSessionId(launchData.portal_session_id);
+      setCurrentLaunchId(null);
+      setWorkspaceMode(null);
+      setShowWorkspace(false);
+      navigate('/');
+    } else if (launchData.mode === 'embedded' && launchData.launch_id) {
+      setCurrentSessionId(launchData.portal_session_id ?? null);
+      setCurrentLaunchId(launchData.launch_id);
+      setWorkspaceMode(launchData.adapter === 'iframe' ? 'iframe' : 'websdk');
+      setShowWorkspace(true);
+      navigate('/');
+    }
+  };
+
+  /**
+   * V2: Select session using resume endpoint
+   */
   const handleSelectSession = async (sessionId: string) => {
     try {
-      // Find resource for this session from cached resources
-      const allResources = Object.values(resourcesGrouped).flat();
-      // We can also use the session list if needed, but resources are already cached
-      const sessionsRes = await sessionApi.listSessions({ limit: 50 });
-      const session = sessionsRes.data.sessions.find((s) => s.portal_session_id === sessionId);
+      const resumeRes = await sessionApi.getSessionResume(sessionId);
+      const resume = resumeRes.data;
       
-      if (session) {
-        const resource = allResources.find((r) => r.id === session.resource_id);
+      // Set resource if different
+      if (resume.resource_id !== currentResource?.id) {
+        const allResources = Object.values(resourcesGrouped).flat();
+        const resource = allResources.find((r) => r.id === resume.resource_id);
         if (resource) {
           setCurrentResource(resource);
         }
       }
       
-      setCurrentSessionId(sessionId);
-      setCurrentLaunchId(null);
-      setShowWorkspace(false);
-      setWorkspaceMode(null);
+      applyResumePayload(resume);
     } catch (error) {
       console.error('Failed to select session:', error);
+      alert('无法恢复会话');
     }
   };
 
   const handleNewChat = async () => {
     if (currentResource) {
-      // Force new session by bypassing resume logic
       setIsLaunching(true);
       try {
         const response = await resourceApi.launchResource(currentResource.id);
         const launchData: LaunchResponse = response.data;
-        if (launchData.kind === 'native' && launchData.portal_session_id) {
-          setCurrentSessionId(launchData.portal_session_id);
-          setCurrentLaunchId(null);
-          setShowWorkspace(false);
-          setWorkspaceMode(null);
-          navigate('/');
-        }
+        applyLaunchResponse(launchData);
       } catch (error: any) {
         console.error('Failed to start new chat:', error);
         alert(error.response?.data?.detail || '启动失败');
@@ -188,23 +177,18 @@ function App() {
   };
 
   const handleLogout = async () => {
-    try {
-      await authApi.logout();
-      setUser(null);
-      setCurrentResource(null);
-      setCurrentSessionId(null);
-      setCurrentLaunchId(null);
-      navigate('/');
-    } catch (error) {
-      console.error('Logout failed:', error);
-    }
+    await logout();
+    setCurrentResource(null);
+    setCurrentSessionId(null);
+    setCurrentLaunchId(null);
+    navigate('/');
   };
 
   const toggleWorkspace = () => {
     setShowWorkspace((prev) => !prev);
   };
 
-  if (isLoading) {
+  if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
@@ -219,13 +203,7 @@ function App() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
-          <p className="text-gray-600 mb-4">请先登录</p>
-          <button
-            onClick={checkAuth}
-            className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600"
-          >
-            重新登录
-          </button>
+          <p className="text-gray-600 mb-4">正在重定向到登录页面...</p>
         </div>
       </div>
     );

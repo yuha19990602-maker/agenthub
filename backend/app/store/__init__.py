@@ -1,11 +1,9 @@
-"""Storage module - exports appropriate store based on configuration"""
+"""Storage module - Memory store is the primary implementation
 
-from ..config import settings
+Note: Redis support has been removed. This module now always exports
+MemoryStore as the primary (and only) storage implementation.
+"""
 
-# Use Redis or in-memory store based on configuration
-if settings.use_redis:
-    from .redis_store import redis_store as store
-else:
-    from .memory_store import memory_store as store
+from .memory_store import MemoryStore, memory_store as store
 
-__all__ = ['store']
+__all__ = ['store', 'MemoryStore']

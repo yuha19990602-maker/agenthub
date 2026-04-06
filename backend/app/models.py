@@ -13,6 +13,7 @@ class ResourceType(str, Enum):
     KB_WEBSDK = "kb_websdk"
     AGENT_WEBSDK = "agent_websdk"
     IFRAME = "iframe"
+    OPENAI_COMPATIBLE_V1 = "openai_compatible_v1"
 
 
 class LaunchMode(str, Enum):
@@ -42,6 +43,15 @@ class ResourceConfig(BaseModel):
     starter_prompts: Optional[List[str]] = None
     iframe_url: Optional[str] = None  # Direct iframe URL for iframe mode
 
+    # OpenAI Compatible v1 config
+    request_path: str = "/chat/completions"
+    api_key_env: Optional[str] = None
+    headers: Dict[str, str] = Field(default_factory=dict)
+    default_params: Dict[str, Any] = Field(default_factory=dict)
+    history_window: int = 20
+    stream_supported: bool = True
+    timeout_sec: int = 120
+
 
 class ResourceSyncMeta(BaseModel):
     """Metadata about how a resource was discovered and synchronized"""
@@ -59,6 +69,7 @@ class Resource(BaseModel):
     name: str = Field(..., description="Resource display name")
     type: ResourceType = Field(..., description="Resource type")
     launch_mode: LaunchMode = Field(..., description="Launch mode")
+    adapter: Optional[str] = Field(None, description="Adapter name for dispatch")
     group: str = Field(..., description="Resource group for UI")
     description: str = Field(..., description="Resource description")
     enabled: bool = Field(default=True, description="Whether resource is enabled")
@@ -89,7 +100,7 @@ class SessionBinding(BaseModel):
     """Binding between a PortalSession and an underlying engine"""
     binding_id: str = Field(..., description="Binding UUID")
     portal_session_id: str = Field(..., description="Portal session UUID")
-    engine_type: str = Field(..., description="Engine type: opencode, websdk, iframe")
+    engine_type: str = Field(..., description="Engine type: opencode, websdk, iframe, openai_compatible")
     adapter: str = Field(default="opencode", description="Adapter name for dispatch")
     engine_session_id: Optional[str] = Field(None, description="Engine session ID for opencode")
     external_session_ref: Optional[str] = Field(None, description="External reference: launch_id for websdk/iframe")
@@ -110,6 +121,13 @@ class PortalMessage(BaseModel):
     trace_id: Optional[str] = Field(None, description="Trace ID for the request")
     created_at: datetime = Field(default_factory=datetime.utcnow, description="Message creation time")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional message metadata")
+    
+    # New fields for V2
+    status: str = Field(default="done", description="Message status: streaming, done, error")
+    dedupe_key: Optional[str] = Field(None, description="Deduplication key")
+    source_provider: Optional[str] = Field(None, description="Source provider: opencode, openai_compatible, backfill")
+    source_message_id: Optional[str] = Field(None, description="Source message ID for deduplication")
+    seq: int = Field(default=0, description="Sequence number for ordering")
 
 
 class ContextScope(BaseModel):
@@ -120,6 +138,8 @@ class ContextScope(BaseModel):
     payload: Dict[str, Any] = Field(default_factory=dict, description="Context payload")
     summary: Optional[str] = Field(None, description="Text summary of context")
     updated_at: datetime = Field(default_factory=datetime.utcnow, description="Last update time")
+    updated_by: Optional[str] = Field(None, description="User who last updated")
+    version: int = Field(default=1, description="Context version")
 
 
 class LaunchRecord(BaseModel):
@@ -144,6 +164,8 @@ class LaunchResponse(BaseModel):
     kind: LaunchMode = Field(..., description="Launch mode: native or websdk")
     portal_session_id: Optional[str] = Field(None, description="Portal session ID for native mode")
     launch_id: Optional[str] = Field(None, description="Launch ID for websdk mode")
+    adapter: Optional[str] = Field(None, description="Adapter used")
+    mode: Optional[str] = Field(None, description="Mode: native or embedded")
 
 
 class MessageCreateResponse(BaseModel):
@@ -193,3 +215,38 @@ class IframeConfig(BaseModel):
     """Iframe embed configuration"""
     iframe_url: str = Field(..., description="Iframe URL to embed")
     user_context: Dict[str, Any] = Field(..., description="User context")
+
+
+# V2 Models
+
+class AuthSession(BaseModel):
+    """Local authentication session after SSO exchange"""
+    session_id: str = Field(..., description="Portal session ID (portal_sid cookie)")
+    user_id: str = Field(..., description="User ID")
+    user_name: str = Field(..., description="User login name from SSO")
+    roles: List[str] = Field(default_factory=list, description="User roles")
+    expires_at: int = Field(..., description="Session expiration timestamp (seconds)")
+    created_at: int = Field(..., description="Session creation timestamp (seconds)")
+    last_seen_at: int = Field(..., description="Last activity timestamp (seconds)")
+    sso_access_token: Optional[str] = Field(None, description="SSO access token (optional)")
+    id_token_claims: Dict[str, Any] = Field(default_factory=dict, description="ID token claims")
+
+
+class SessionResumePayload(BaseModel):
+    """Payload for session resume endpoint"""
+    portal_session_id: str = Field(..., description="Portal session ID")
+    resource_id: str = Field(..., description="Resource ID")
+    title: str = Field(..., description="Session title")
+    adapter: str = Field(..., description="Adapter name")
+    mode: str = Field(..., description="Mode: native or embedded")
+    launch_id: Optional[str] = Field(None, description="Launch ID for embedded mode")
+    show_chat_history: bool = Field(default=False, description="Whether to show chat history")
+    show_workspace: bool = Field(default=False, description="Whether to show workspace")
+
+
+class OAuthState(BaseModel):
+    """OAuth state for SSO flow"""
+    state: str = Field(..., description="State parameter")
+    next_url: str = Field(default="/", description="Redirect after login")
+    code_verifier: Optional[str] = Field(None, description="PKCE code verifier")
+    expires_at: int = Field(..., description="Expiration timestamp (seconds)")
