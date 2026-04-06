@@ -151,8 +151,13 @@ export function ChatInterface({ sessionId, resource, onRestart }: ChatInterfaceP
   }, []);
 
   const loadMessages = async () => {
+    if (!sessionId) {
+      console.log('ChatInterface: No sessionId, skipping message load');
+      return;
+    }
     try {
       setIsLoadingHistory(true);
+      console.log('ChatInterface: Loading messages for session', sessionId);
       const response = await sessionApi.getMessages(sessionId);
       const strippedMessages = response.data.map((msg: Message) => ({ ...msg, text: stripText(msg.text) }));
       setMessages(strippedMessages);
@@ -251,6 +256,13 @@ export function ChatInterface({ sessionId, resource, onRestart }: ChatInterfaceP
     const trimmedInput = inputText.trim();
     if ((!trimmedInput && pendingFiles.length === 0) || isLoading) return;
 
+    // Validate sessionId
+    if (!sessionId) {
+      console.error('ChatInterface: No sessionId available');
+      alert('会话未创建，请重新选择资源');
+      return;
+    }
+
     const messageText = buildMessageWithFiles();
     if (!messageText) return;
 
@@ -266,37 +278,58 @@ export function ChatInterface({ sessionId, resource, onRestart }: ChatInterfaceP
     const assistantMessage: Message = { role: 'assistant', text: '', timestamp: new Date().toISOString() };
     setMessages(prev => [...prev, assistantMessage]);
 
-    abortControllerRef.current = sessionApi.sendMessageStream(
-      sessionId,
-      messageText,
-      (chunk) => {
-        setMessages(prev => {
-          const lastMsg = prev[prev.length - 1];
-          if (lastMsg.role === 'assistant') {
-            return [...prev.slice(0, -1), { ...lastMsg, text: lastMsg.text + chunk }];
-          }
-          return prev;
-        });
-      },
-      () => {
-        setIsLoading(false);
-        setIsStreaming(false);
-        abortControllerRef.current = null;
-      },
-      (error) => {
-        console.error('Stream error:', error);
-        setIsLoading(false);
-        setIsStreaming(false);
-        abortControllerRef.current = null;
-        setMessages(prev => {
-          const lastMsg = prev[prev.length - 1];
-          if (lastMsg.role === 'assistant' && lastMsg.text === '') {
-            return [...prev.slice(0, -1), { role: 'system', text: '消息发送失败，请重试', timestamp: new Date().toISOString() }];
-          }
-          return prev;
-        });
+    console.log('ChatInterface: Sending message to session', sessionId, 'message length:', messageText.length);
+    
+    try {
+      abortControllerRef.current = sessionApi.sendMessageStream(
+        sessionId,
+        messageText,
+        {
+        onStart: (messageId: string) => {
+          console.log('ChatInterface: Stream started, messageId:', messageId);
+        },
+        onDelta: (chunk: string) => {
+          setMessages(prev => {
+            const lastMsg = prev[prev.length - 1];
+            if (lastMsg.role === 'assistant') {
+              return [...prev.slice(0, -1), { ...lastMsg, text: lastMsg.text + chunk }];
+            }
+            return prev;
+          });
+        },
+        onDone: () => {
+          console.log('ChatInterface: Stream done');
+          setIsLoading(false);
+          setIsStreaming(false);
+          abortControllerRef.current = null;
+        },
+        onError: (error: string) => {
+          console.error('ChatInterface: Stream error:', error);
+          setIsLoading(false);
+          setIsStreaming(false);
+          abortControllerRef.current = null;
+          setMessages(prev => {
+            const lastMsg = prev[prev.length - 1];
+            if (lastMsg.role === 'assistant' && lastMsg.text === '') {
+              return [...prev.slice(0, -1), { role: 'system', text: '消息发送失败，请重试', timestamp: new Date().toISOString() }];
+            }
+            return prev;
+          });
+        }
       }
-    );
+      );
+    } catch (err) {
+      console.error('ChatInterface: Error sending message:', err);
+      setIsLoading(false);
+      setIsStreaming(false);
+      setMessages(prev => {
+        const lastMsg = prev[prev.length - 1];
+        if (lastMsg?.role === 'assistant') {
+          return [...prev.slice(0, -1), { role: 'system', text: '消息发送失败，请重试', timestamp: new Date().toISOString() }];
+        }
+        return prev;
+      });
+    }
   };
 
   const handleStopStreaming = () => {

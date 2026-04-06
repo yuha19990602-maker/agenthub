@@ -54,13 +54,22 @@ class Settings(BaseSettings):
     portal_name: str = os.getenv("PORTAL_NAME", "AI Portal")
     resources_path: str = os.getenv("RESOURCES_PATH", "config/resources.generated.json")
 
-    # CORS
+    # CORS (include both localhost and 127.0.0.1 for dev)
     cors_origins: list = [
         "http://localhost:5173",
+        "http://localhost:5174",
         "http://localhost:8000",
         "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
         "http://127.0.0.1:8000",
     ]
+    
+    # Allow requests from any origin in dev
+    @property
+    def cors_origins_list(self) -> list:
+        if self.env == "dev":
+            return ["*"]
+        return self.cors_origins
 
     # Logging
     log_level: str = os.getenv("LOG_LEVEL", "INFO")

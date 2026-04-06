@@ -16,6 +16,18 @@ from ..store import store as storage
 
 router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
+# Fake SSO mode detection - auto-enable when SSO is not configured
+# This allows testing without real SSO infrastructure
+_is_fake_sso_mode = not settings.sso_authorize_url or not settings.sso_token_url
+
+if _is_fake_sso_mode:
+    print("⚠️  SSO not configured - enabling FAKE SSO mode for testing")
+    print("   Any authorization code will be accepted")
+    from .fake_sso import get_fake_sso
+    _fake_sso = get_fake_sso()
+else:
+    _fake_sso = None
+
 
 # Request/Response models
 class LoginUrlResponse(BaseModel):
@@ -49,10 +61,22 @@ class LogoutResponse(BaseModel):
     success: bool
 
 
-def _build_authorize_url(state: str) -> str:
-    """Build SSO authorize URL"""
+def _build_authorize_url(state: str, next_url: str = "/") -> str:
+    """Build SSO authorize URL (or fake SSO URL if not configured)"""
     import urllib.parse
     
+    if _is_fake_sso_mode and _fake_sso:
+        # Fake SSO mode: immediately redirect back with code
+        code = _fake_sso.issue_authorization_code(next_url)
+        params = {
+            "code": code,
+            "state": state,
+        }
+        query = urllib.parse.urlencode(params)
+        # Build the callback URL directly
+        return f"{settings.sso_redirect_uri}?{query}"
+    
+    # Real SSO mode
     params = {
         "client_id": settings.sso_client_id,
         "redirect_uri": settings.sso_redirect_uri,
@@ -70,17 +94,11 @@ async def get_login_url(next: str = "/"):
     Get SSO login URL with state parameter.
     Frontend should redirect user to this URL to start OAuth2 flow.
     """
-    if not settings.sso_authorize_url:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="SSO not configured"
-        )
-    
     # Generate state and store it
     state = secrets.token_urlsafe(32)
     await storage.save_oauth_state(state, next)
     
-    return LoginUrlResponse(login_url=_build_authorize_url(state))
+    return LoginUrlResponse(login_url=_build_authorize_url(state, next))
 
 
 @router.post("/exchange", response_model=ExchangeCodeResponse)
@@ -88,6 +106,8 @@ async def exchange_code(body: ExchangeCodeRequest):
     """
     Exchange OAuth2 authorization code for access token.
     Creates local session and sets portal_sid cookie.
+    
+    In FAKE SSO mode, any code will be accepted.
     """
     # Validate state if provided
     if body.state:
@@ -100,9 +120,14 @@ async def exchange_code(body: ExchangeCodeRequest):
     else:
         next_url = "/"
     
-    # Exchange code for token with SSO
+    # Exchange code for token
     try:
-        token_resp = await sso_service.exchange_code(body.code)
+        if _is_fake_sso_mode and _fake_sso:
+            # Fake SSO: accept any code
+            token_resp = await _fake_sso.exchange_code(body.code)
+        else:
+            # Real SSO: call external service
+            token_resp = await sso_service.exchange_code(body.code)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -111,9 +136,14 @@ async def exchange_code(body: ExchangeCodeRequest):
     
     # Verify JWT and extract claims
     try:
-        claims = sso_service.verify_jwt(
-            token_resp.get("id_token") or token_resp.get("access_token")
-        )
+        if _is_fake_sso_mode and _fake_sso:
+            claims = _fake_sso.verify_jwt(
+                token_resp.get("id_token") or token_resp.get("access_token")
+            )
+        else:
+            claims = sso_service.verify_jwt(
+                token_resp.get("id_token") or token_resp.get("access_token")
+            )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -169,18 +199,23 @@ async def sso_callback(code: str, state: Optional[str] = None):
     """
     SSO callback endpoint - handles OAuth2 redirect from identity provider.
     This is an alternative to frontend handling the exchange.
-    """
-    if settings.enable_mock_login and settings.env == "dev":
-        # In dev mode with mock enabled, redirect to mock login
-        return RedirectResponse(url=f"/api/auth/mock-login?emp_no=E10001&next=/")
     
+    In FAKE SSO mode, this also handles the immediate redirect from login-url.
+    """
     # Exchange code via our own API
     try:
         exchange_body = ExchangeCodeRequest(code=code, state=state)
         result = await exchange_code(exchange_body)
         
-        # Redirect to next URL with cookie already set
-        next_url = result.body.get("next", "/") if hasattr(result, 'body') else "/"
+        # Get next URL from response or use default
+        next_url = "/"
+        if hasattr(result, 'body') and isinstance(result.body, bytes):
+            import json
+            body_data = json.loads(result.body)
+            next_url = body_data.get("next", "/")
+        elif hasattr(result, 'body') and hasattr(result.body, 'get'):
+            next_url = result.body.get("next", "/")
+        
         return RedirectResponse(url=next_url)
     except HTTPException:
         raise
@@ -216,14 +251,23 @@ async def logout(
     return resp
 
 
-# Dev-only mock login endpoint
+# Dev-only mock login endpoint - kept for backward compatibility
+# In FAKE SSO mode, this is redundant but kept for compatibility
 if settings.enable_mock_login and settings.env == "dev":
     
     @router.get("/mock-login")
-    async def mock_login(emp_no: str, next: str = "/"):
+    async def mock_login(
+        request: Request,
+        emp_no: str, 
+        next: str = "/",
+        redirect: bool = True  # New param: if true, redirect to frontend
+    ):
         """
         Mock SSO login endpoint - DEV ONLY.
-        Only available when ENV=dev and ENABLE_MOCK_LOGIN=true.
+        Direct login without going through OAuth2 flow.
+        
+        If redirect=true (default), redirects to frontend after login.
+        If redirect=false, returns JSON (for AJAX calls).
         """
         user = user_repo.create_mock_user(emp_no)
         
@@ -235,15 +279,30 @@ if settings.enable_mock_login and settings.env == "dev":
         }
         auth_session = await auth_session_service.create_session(user, claims)
         
-        resp = JSONResponse({
-            "message": "Mock login successful (dev only)",
-            "redirect": next,
-            "user": {
-                "emp_no": user.emp_no,
-                "name": user.name,
-                "dept": user.dept
-            }
-        })
+        # Determine frontend URL
+        frontend_url = "http://127.0.0.1:5173"
+        
+        # Build redirect URL
+        redirect_url = f"{frontend_url}{next}"
+        
+        # Check if this is an AJAX request or browser direct access
+        accept_header = request.headers.get('accept', '')
+        is_ajax = 'application/json' in accept_header or not redirect
+        
+        if is_ajax:
+            # Return JSON for AJAX calls
+            resp = JSONResponse({
+                "message": "Mock login successful (dev only)",
+                "redirect": redirect_url,
+                "user": {
+                    "emp_no": user.emp_no,
+                    "name": user.name,
+                    "dept": user.dept
+                }
+            })
+        else:
+            # Redirect browser to frontend
+            resp = RedirectResponse(url=redirect_url, status_code=302)
         
         resp.set_cookie(
             key="portal_sid",

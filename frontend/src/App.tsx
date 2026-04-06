@@ -3,8 +3,9 @@
 import { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, useNavigate, useParams } from 'react-router-dom';
 import { User, LogOut, PanelRightOpen, PanelRightClose } from 'lucide-react';
-import { resourceApi, sessionApi } from './api';
+import { resourceApi, sessionApi, authApi } from './api';
 import { useAuth } from './auth/AuthProvider';
+import { DevAutoLogin } from './auth/DevAutoLogin';
 import type { Resource, LaunchResponse, SessionResumePayload } from './types';
 import { ResourceSidebar } from './components/ResourceSidebar';
 import { ChatInterface } from './components/ChatInterface';
@@ -32,6 +33,14 @@ function App() {
       loadResources();
     }
   }, [user]);
+
+  // Redirect to login if not authenticated
+  useEffect(() => {
+    if (!authLoading && !user) {
+      console.log('Not authenticated, redirecting to login...');
+      authApi.redirectToSSO(window.location.pathname + window.location.search);
+    }
+  }, [authLoading, user]);
 
   // Load default resource when resources are loaded
   useEffect(() => {
@@ -200,6 +209,11 @@ function App() {
   }
 
   if (!user) {
+    // Development mode: auto login
+    if (import.meta.env.DEV) {
+      return <DevAutoLogin />;
+    }
+    
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">

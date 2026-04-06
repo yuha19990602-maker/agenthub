@@ -1,0 +1,112 @@
+[
+  {
+    "id": "general-chat",
+    "name": "通用对话",
+    "type": "direct_chat",
+    "launch_mode": "native",
+    "adapter": "opencode",
+    "group": "基础功能",
+    "description": "通用 AI 对话助手，适用于日常问答和简单任务",
+    "enabled": true,
+    "tags": ["chat", "general"],
+    "config": {
+      "workspace_id": "default",
+      "model": "gpt-3.5-turbo",
+      "starter_prompts": ["你好", "帮我写一段Python代码", "解释一下这个概念"]
+    },
+    "sync_meta": {
+      "origin": "static",
+      "origin_key": "general-chat"
+    }
+  },
+  {
+    "id": "coding-assistant",
+    "name": "编程助手",
+    "type": "skill_chat",
+    "launch_mode": "native",
+    "adapter": "skill_chat",
+    "group": "技能助手",
+    "description": "专业编程助手，支持代码审查、调试和优化建议",
+    "enabled": true,
+    "tags": ["coding", "development", "skill"],
+    "config": {
+      "workspace_id": "default",
+      "skill_name": "coding",
+      "starter_prompts": ["请帮我审查这段代码", "如何优化这个函数？", "解释这个错误信息"]
+    },
+    "sync_meta": {
+      "origin": "static",
+      "origin_key": "coding-assistant"
+    }
+  },
+  {
+    "id": "openai-compatible-demo",
+    "name": "OpenAI 兼容模型",
+    "type": "openai_compatible_v1",
+    "launch_mode": "native",
+    "adapter": "openai_compatible",
+    "group": "模型资源",
+    "description": "通过 OpenAI Compatible API 访问的模型（示例配置）",
+    "enabled": true,
+    "tags": ["chat", "llm", "compatible"],
+    "config": {
+      "base_url": "https://api.openai.com/v1",
+      "request_path": "/chat/completions",
+      "api_key_env": "OPENAI_API_KEY",
+      "model": "gpt-3.5-turbo",
+      "default_params": {
+        "temperature": 0.7,
+        "max_tokens": 2048
+      },
+      "headers": {
+        "X-Portal-Source": "agenthub"
+      },
+      "history_window": 20,
+      "stream_supported": true,
+      "timeout_sec": 120
+    },
+    "sync_meta": {
+      "origin": "static",
+      "origin_key": "openai-compatible-demo"
+    }
+  },
+  {
+    "id": "knowledge-base",
+    "name": "知识库助手",
+    "type": "kb_websdk",
+    "launch_mode": "websdk",
+    "adapter": "websdk",
+    "group": "知识库",
+    "description": "企业知识库查询助手（示例 WebSDK 资源）",
+    "enabled": true,
+    "tags": ["knowledge", "websdk"],
+    "config": {
+      "workspace_id": "default",
+      "script_url": "https://example.com/sdk.js",
+      "app_key": "demo-key",
+      "base_url": "https://example.com/api"
+    },
+    "sync_meta": {
+      "origin": "static",
+      "origin_key": "knowledge-base"
+    }
+  },
+  {
+    "id": "external-tool",
+    "name": "外部工具",
+    "type": "iframe",
+    "launch_mode": "iframe",
+    "adapter": "iframe",
+    "group": "第三方工具",
+    "description": "通过 iframe 嵌入的外部工具（示例）",
+    "enabled": true,
+    "tags": ["iframe", "external"],
+    "config": {
+      "iframe_url": "https://example.com/tool"
+    },
+    "sync_meta": {
+      "origin": "static",
+      "origin_key": "external-tool"
+    }
+  }
+]

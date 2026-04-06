@@ -22,6 +22,7 @@ const api = axios.create({
   withCredentials: true, // Send cookies (portal_sid)
   headers: {
     'Content-Type': 'application/json',
+    'Accept': 'application/json',
   },
 });
 
@@ -137,6 +138,7 @@ export const sessionApi = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'Accept': 'text/event-stream',
       },
       credentials: 'include',
       body: JSON.stringify({ text }),
@@ -232,8 +234,10 @@ export const sessionApi = {
       })
       .catch((error) => {
         if (error.name === 'AbortError') {
+          console.log('Request aborted');
           return;
         }
+        console.error('Fetch error:', error);
         handlers.onError?.(error.message || 'Failed to send message');
       });
 

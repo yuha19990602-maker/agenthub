@@ -39,6 +39,14 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [error, setError] = useState<string | null>(null);
 
   /**
+   * Redirect to SSO login
+   */
+  const redirectToLogin = useCallback(() => {
+    console.log('Redirecting to SSO login...');
+    authApi.redirectToSSO(window.location.pathname + window.location.search);
+  }, []);
+
+  /**
    * Bootstrap authentication on mount.
    * Checks for OAuth2 callback (code/state) or existing session.
    */
@@ -78,10 +86,14 @@ export function AuthProvider({ children }: AuthProviderProps) {
       if (err?.response?.status !== 401) {
         setError(err?.message || 'Authentication failed');
       }
+      // Trigger redirect to login after a short delay
+      setTimeout(() => {
+        redirectToLogin();
+      }, 100);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [redirectToLogin]);
 
   /**
    * Refresh user info from current session
