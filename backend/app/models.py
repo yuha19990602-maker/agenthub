@@ -63,6 +63,26 @@ class ResourceSyncMeta(BaseModel):
     last_seen_at: Optional[datetime] = Field(None, description="Last sync timestamp")
 
 
+class ResourceEntrypoint(BaseModel):
+    """Launchable entrypoint under a resource."""
+    entrypoint_id: str = Field(..., description="Entrypoint identifier")
+    title: str = Field(..., description="Entrypoint display title")
+    adapter: str = Field(..., description="Adapter used by this entrypoint")
+    launch_mode: LaunchMode = Field(..., description="Launch mode for this entrypoint")
+    enabled: bool = Field(default=True, description="Whether entrypoint is enabled")
+    is_default: bool = Field(default=False, description="Whether entrypoint is default")
+    skill_name: Optional[str] = Field(None, description="Bound skill name if any")
+    workspace_id: Optional[str] = Field(None, description="Bound workspace if any")
+
+
+class ResourceCapabilities(BaseModel):
+    """Functional capabilities used by frontend and recommendation logic."""
+    searchable: bool = True
+    resumable: bool = True
+    upload: bool = False
+    auditable: bool = True
+
+
 class Resource(BaseModel):
     """Resource catalog item"""
     id: str = Field(..., description="Unique resource identifier")
@@ -77,6 +97,10 @@ class Resource(BaseModel):
     config: ResourceConfig = Field(default_factory=ResourceConfig, description="Resource configuration")
     acl: Optional[Dict[str, Any]] = Field(default=None, description="Access control rules")
     sync_meta: Optional[ResourceSyncMeta] = Field(default=None, description="Synchronization metadata")
+    resource_kind: Optional[str] = Field(default=None, description="chat | skill | kb | agent | integration")
+    entrypoints: List[ResourceEntrypoint] = Field(default_factory=list, description="Launchable entrypoints")
+    capabilities: Optional[ResourceCapabilities] = Field(default=None, description="Resource capabilities")
+    recommended_for: Optional[Dict[str, Any]] = Field(default=None, description="Rule-based recommendation hints")
 
 
 class PortalSession(BaseModel):
@@ -104,6 +128,7 @@ class SessionBinding(BaseModel):
     adapter: str = Field(default="opencode", description="Adapter name for dispatch")
     engine_session_id: Optional[str] = Field(None, description="Engine session ID for opencode")
     external_session_ref: Optional[str] = Field(None, description="External reference: launch_id for websdk/iframe")
+    entrypoint_id: Optional[str] = Field(None, description="Selected entrypoint identifier")
     workspace_id: Optional[str] = Field(None, description="Workspace ID for skill sessions")
     skill_name: Optional[str] = Field(None, description="Skill name for skill chat sessions")
     binding_status: str = Field(default="active", description="Binding status: active, closed, stale")
@@ -166,6 +191,7 @@ class LaunchResponse(BaseModel):
     launch_id: Optional[str] = Field(None, description="Launch ID for websdk mode")
     adapter: Optional[str] = Field(None, description="Adapter used")
     mode: Optional[str] = Field(None, description="Mode: native or embedded")
+    entrypoint_id: Optional[str] = Field(None, description="Selected entrypoint identifier")
 
 
 class MessageCreateResponse(BaseModel):
@@ -200,6 +226,11 @@ class SkillInfo(BaseModel):
     installed: bool = Field(default=False, description="Whether skill is installed")
     skill_name: Optional[str] = Field(None, description="OpenCode skill name")
     starter_prompts: Optional[List[str]] = Field(None, description="Starter prompts")
+    workspace_id: Optional[str] = Field(None, description="Workspace ID")
+    version: Optional[str] = Field(None, description="Skill version")
+    entrypoint_id: Optional[str] = Field(None, description="Related portal entrypoint")
+    source: Optional[str] = Field(None, description="Source system")
+    status: Optional[str] = Field(None, description="Skill status")
 
 
 class EmbedConfig(BaseModel):
@@ -230,6 +261,8 @@ class AuthSession(BaseModel):
     last_seen_at: int = Field(..., description="Last activity timestamp (seconds)")
     sso_access_token: Optional[str] = Field(None, description="SSO access token (optional)")
     id_token_claims: Dict[str, Any] = Field(default_factory=dict, description="ID token claims")
+    user_snapshot: Dict[str, Any] = Field(default_factory=dict, description="Stable user snapshot for session recovery")
+    profile_tags: List[str] = Field(default_factory=list, description="Derived profile tags")
 
 
 class SessionResumePayload(BaseModel):
@@ -240,8 +273,16 @@ class SessionResumePayload(BaseModel):
     adapter: str = Field(..., description="Adapter name")
     mode: str = Field(..., description="Mode: native or embedded")
     launch_id: Optional[str] = Field(None, description="Launch ID for embedded mode")
+    entrypoint_id: Optional[str] = Field(None, description="Selected entrypoint identifier")
+    workspace_id: Optional[str] = Field(None, description="Workspace ID")
+    skill_name: Optional[str] = Field(None, description="Skill name")
     show_chat_history: bool = Field(default=False, description="Whether to show chat history")
     show_workspace: bool = Field(default=False, description="Whether to show workspace")
+
+
+class LaunchRequest(BaseModel):
+    """Request payload for selecting a resource entrypoint."""
+    entrypoint_id: Optional[str] = None
 
 
 class OAuthState(BaseModel):

@@ -13,6 +13,7 @@ import type {
   StreamEvent,
   SessionResumePayload,
   StreamHandlers,
+  ResourceListResponse,
 } from './types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/';
@@ -66,8 +67,26 @@ export const resourceApi = {
 
   getResource: (id: string) => api.get<Resource>(`/api/resources/${id}`),
 
-  launchResource: (id: string) =>
-    api.post<LaunchResponse>(`/api/resources/${id}/launch`),
+  launchResource: (id: string, entrypointId?: string) =>
+    api.post<LaunchResponse>(`/api/resources/${id}/launch`, entrypointId ? { entrypoint_id: entrypointId } : {}),
+
+  searchResources: (query: string) =>
+    api.get<ResourceListResponse>(`/api/resources/search?q=${encodeURIComponent(query)}`),
+
+  listRecentResources: () =>
+    api.get<ResourceListResponse>('/api/resources/recent'),
+
+  listFavoriteResources: () =>
+    api.get<ResourceListResponse>('/api/resources/favorites'),
+
+  addFavorite: (id: string) =>
+    api.post<{ success: boolean; favorites: string[] }>(`/api/resources/${id}/favorite`),
+
+  removeFavorite: (id: string) =>
+    api.delete<{ success: boolean; favorites: string[] }>(`/api/resources/${id}/favorite`),
+
+  listRecommendedResources: () =>
+    api.get<ResourceListResponse>('/api/resources/recommended'),
 
   syncResources: (workspaceId = 'default') =>
     api.post<{ success: boolean; count: number; workspace_id: string }>(
@@ -264,7 +283,14 @@ export const contextApi = {
 
 // Skill APIs
 export const skillApi = {
-  listSkills: () => api.get<SkillInfo[]>('/api/skills'),
+  listSkills: (params?: { workspace_id?: string; q?: string; installed?: boolean }) => {
+    const search = new URLSearchParams();
+    if (params?.workspace_id) search.append('workspace_id', params.workspace_id);
+    if (params?.q) search.append('q', params.q);
+    if (typeof params?.installed === 'boolean') search.append('installed', String(params.installed));
+    const query = search.toString();
+    return api.get<SkillInfo[]>(`/api/skills${query ? `?${query}` : ''}`);
+  },
 };
 
 export default api;

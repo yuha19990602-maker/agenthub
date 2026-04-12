@@ -37,6 +37,10 @@ class MemoryStore:
         # V2: Auth session storage
         self._auth_sessions: Dict[str, AuthSession] = {}
         self._oauth_states: Dict[str, tuple[str, int]] = {}  # state -> (next_url, expires_at)
+        self._recent_resources: Dict[str, List[str]] = defaultdict(list)
+        self._favorite_resources: Dict[str, List[str]] = defaultdict(list)
+        self._usage_events: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        self._profile_tags: Dict[str, List[str]] = defaultdict(list)
         
         # Indexes
         self._user_sessions: Dict[str, List[str]] = defaultdict(list)
@@ -59,6 +63,9 @@ class MemoryStore:
         self._max_session_messages = 200
         self._max_auth_sessions = 1000
         self._max_oauth_states = 100
+        self._max_recent_resources = 20
+        self._max_favorite_resources = 100
+        self._max_usage_events = 200
 
     # Session operations
     async def save_session(self, session: PortalSession) -> PortalSession:
@@ -438,6 +445,63 @@ class MemoryStore:
             if session_id in self._auth_sessions:
                 del self._auth_sessions[session_id]
                 logger.info(f"Deleted auth session: {session_id}")
+
+    # User state operations
+    async def record_recent_resource(self, emp_no: str, resource_id: str) -> List[str]:
+        """Record a recently used resource for a user."""
+        async with self._lock:
+            recent = self._recent_resources[emp_no]
+            if resource_id in recent:
+                recent.remove(resource_id)
+            recent.insert(0, resource_id)
+            self._recent_resources[emp_no] = recent[:self._max_recent_resources]
+            return list(self._recent_resources[emp_no])
+
+    async def list_recent_resources(self, emp_no: str, limit: int = 10) -> List[str]:
+        """Return recent resource IDs."""
+        return list(self._recent_resources.get(emp_no, []))[:limit]
+
+    async def add_favorite_resource(self, emp_no: str, resource_id: str) -> List[str]:
+        """Add a favorite resource for a user."""
+        async with self._lock:
+            favorites = self._favorite_resources[emp_no]
+            if resource_id not in favorites:
+                favorites.insert(0, resource_id)
+            self._favorite_resources[emp_no] = favorites[:self._max_favorite_resources]
+            return list(self._favorite_resources[emp_no])
+
+    async def remove_favorite_resource(self, emp_no: str, resource_id: str) -> List[str]:
+        """Remove a favorite resource for a user."""
+        async with self._lock:
+            favorites = self._favorite_resources.get(emp_no, [])
+            if resource_id in favorites:
+                favorites.remove(resource_id)
+            return list(favorites)
+
+    async def list_favorite_resources(self, emp_no: str) -> List[str]:
+        """Return favorite resource IDs."""
+        return list(self._favorite_resources.get(emp_no, []))
+
+    async def save_profile_tags(self, emp_no: str, tags: List[str]) -> List[str]:
+        """Persist derived user profile tags."""
+        async with self._lock:
+            self._profile_tags[emp_no] = list(dict.fromkeys(tags))
+            return list(self._profile_tags[emp_no])
+
+    async def list_profile_tags(self, emp_no: str) -> List[str]:
+        """Return derived profile tags."""
+        return list(self._profile_tags.get(emp_no, []))
+
+    async def append_usage_event(self, emp_no: str, event: Dict[str, Any]) -> None:
+        """Append a lightweight usage event."""
+        async with self._lock:
+            events = self._usage_events[emp_no]
+            events.insert(0, event)
+            self._usage_events[emp_no] = events[:self._max_usage_events]
+
+    async def list_usage_events(self, emp_no: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Return recent usage events."""
+        return list(self._usage_events.get(emp_no, []))[:limit]
     
     # OAuth State operations (V2)
     async def save_oauth_state(self, state: str, next_url: str) -> None:
@@ -477,6 +541,10 @@ class MemoryStore:
         self._contexts.clear()
         self._auth_sessions.clear()
         self._oauth_states.clear()
+        self._recent_resources.clear()
+        self._favorite_resources.clear()
+        self._usage_events.clear()
+        self._profile_tags.clear()
         self._user_sessions.clear()
         self._user_launches.clear()
         self._context_scopes.clear()

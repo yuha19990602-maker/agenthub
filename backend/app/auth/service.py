@@ -2,6 +2,7 @@
 
 import time
 import secrets
+import hashlib
 from typing import Optional, Dict, Any
 import httpx
 
@@ -134,6 +135,35 @@ class SSOService:
 
 class AuthSessionService:
     """Local session management service"""
+
+    @staticmethod
+    def _build_user_snapshot(user: UserCtx, claims: Dict[str, Any]) -> Dict[str, Any]:
+        claims_digest = hashlib.sha256(
+            repr(sorted(claims.items())).encode("utf-8")
+        ).hexdigest()
+        return {
+            "emp_no": user.emp_no,
+            "name": user.name,
+            "dept": user.dept,
+            "email": user.email,
+            "roles": list(user.roles),
+            "claims_digest": claims_digest,
+        }
+
+    @staticmethod
+    def _derive_profile_tags(user: UserCtx) -> list[str]:
+        tags = []
+        dept = (user.dept or "").lower()
+        roles = {role.lower() for role in user.roles}
+        if "engineering" in dept or "it" in dept:
+            tags.append("prefers_native_chat")
+        if "data" in dept or "analyst" in dept:
+            tags.append("frequent_data_analysis")
+        if "hr" in dept:
+            tags.append("uses_hr_workspace")
+        if "admin" in roles:
+            tags.append("portal_admin")
+        return tags
     
     async def create_session(
         self,
@@ -153,6 +183,8 @@ class AuthSessionService:
             last_seen_at=now,
             sso_access_token=claims.get("access_token"),
             id_token_claims=claims,
+            user_snapshot=self._build_user_snapshot(user, claims),
+            profile_tags=self._derive_profile_tags(user),
         )
         
         # Save to store

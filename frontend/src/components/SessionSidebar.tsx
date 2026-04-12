@@ -7,12 +7,14 @@ import type { PortalSession } from '../types';
 
 interface SessionSidebarProps {
   currentSessionId?: string;
+  currentEntrypointId?: string;
   onSelectSession: (session: PortalSession) => void;
   onNewChat: () => void;
 }
 
 export function SessionSidebar({
   currentSessionId,
+  currentEntrypointId,
   onSelectSession,
   onNewChat,
 }: SessionSidebarProps) {
@@ -78,9 +80,19 @@ export function SessionSidebar({
                     {session.last_message_preview}
                   </p>
                 )}
-                <div className="flex items-center mt-1 text-xs text-gray-500">
+                <div className="flex items-center mt-1 gap-2 text-xs text-gray-500">
                   <Clock className="w-3 h-3 mr-1" />
                   {formatTime(session.last_message_at || session.updated_at)}
+                  {(session.entrypoint_id || currentEntrypointId) && (
+                    <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">
+                      {session.entrypoint_id || currentEntrypointId}
+                    </span>
+                  )}
+                  {(session.workspace_id || session.skill_name) && (
+                    <span className="truncate max-w-[90px]">
+                      {session.workspace_id || session.skill_name}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>

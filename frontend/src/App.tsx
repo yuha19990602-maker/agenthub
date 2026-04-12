@@ -5,7 +5,7 @@ import { BrowserRouter as Router, Routes, Route, useNavigate, useParams } from '
 import { User, LogOut, PanelRightOpen, PanelRightClose } from 'lucide-react';
 import { resourceApi, sessionApi, authApi } from './api';
 import { useAuth } from './auth/AuthProvider';
-import type { Resource, LaunchResponse, SessionResumePayload, PortalSession } from './types';
+import type { Resource, ResourceEntrypoint, LaunchResponse, SessionResumePayload, PortalSession } from './types';
 import { ResourceSidebar } from './components/ResourceSidebar';
 import { ChatInterface } from './components/ChatInterface';
 import { SessionSidebar } from './components/SessionSidebar';
@@ -18,9 +18,13 @@ const DEFAULT_RESOURCE_ID = 'general-chat';
 function App() {
   const { user, loading: authLoading, logout } = useAuth();
   const [resourcesGrouped, setResourcesGrouped] = useState<Record<string, Resource[]>>({});
+  const [recommendedResources, setRecommendedResources] = useState<Resource[]>([]);
+  const [recentResources, setRecentResources] = useState<Resource[]>([]);
+  const [favoriteResources, setFavoriteResources] = useState<Resource[]>([]);
   const [currentResource, setCurrentResource] = useState<Resource | null>(null);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [currentLaunchId, setCurrentLaunchId] = useState<string | null>(null);
+  const [currentEntrypointId, setCurrentEntrypointId] = useState<string | null>(null);
   const [showWorkspace, setShowWorkspace] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState<'websdk' | 'iframe' | null>(null);
   const [isLaunching, setIsLaunching] = useState(false);
@@ -50,11 +54,42 @@ function App() {
 
   const loadResources = async () => {
     try {
-      const response = await resourceApi.listResourcesGrouped();
-      setResourcesGrouped(response.data);
+      const [groupedRes, recommendedRes, recentRes, favoriteRes] = await Promise.all([
+        resourceApi.listResourcesGrouped(),
+        resourceApi.listRecommendedResources(),
+        resourceApi.listRecentResources(),
+        resourceApi.listFavoriteResources(),
+      ]);
+      setResourcesGrouped(groupedRes.data);
+      setRecommendedResources(recommendedRes.data.items);
+      setRecentResources(recentRes.data.items);
+      setFavoriteResources(favoriteRes.data.items);
     } catch (error) {
       console.error('Failed to load resources:', error);
     }
+  };
+
+  const refreshUserState = async () => {
+    try {
+      const [recommendedRes, recentRes, favoriteRes] = await Promise.all([
+        resourceApi.listRecommendedResources(),
+        resourceApi.listRecentResources(),
+        resourceApi.listFavoriteResources(),
+      ]);
+      setRecommendedResources(recommendedRes.data.items);
+      setRecentResources(recentRes.data.items);
+      setFavoriteResources(favoriteRes.data.items);
+    } catch (error) {
+      console.error('Failed to refresh user state:', error);
+    }
+  };
+
+  const getDefaultEntrypoint = (resource: Resource, preferredEntrypointId?: string | null): ResourceEntrypoint | undefined => {
+    const enabledEntrypoints = (resource.entrypoints || []).filter((entrypoint) => entrypoint.enabled);
+    if (preferredEntrypointId) {
+      return enabledEntrypoints.find((item) => item.entrypoint_id === preferredEntrypointId);
+    }
+    return enabledEntrypoints.find((item) => item.is_default) || enabledEntrypoints[0];
   };
 
   const launchDefaultResource = async () => {
@@ -66,34 +101,38 @@ function App() {
     }
   };
 
-  const handleSelectResource = async (resource: Resource) => {
+  const handleSelectResource = async (resource: Resource, entrypointId?: string) => {
     if (isLaunching) return;
     
     setIsLaunching(true);
     setCurrentResource(resource);
+    const selectedEntrypoint = getDefaultEntrypoint(resource, entrypointId);
+    setCurrentEntrypointId(selectedEntrypoint?.entrypoint_id || null);
 
     try {
       // For native resources, try to resume the most recent active session
-      if (resource.launch_mode === 'native') {
+      if (selectedEntrypoint?.launch_mode === 'native') {
         const sessionsRes = await sessionApi.listSessions({
           resource_id: resource.id,
           status: 'active',
           limit: 1,
         });
         const recentSession = sessionsRes.data.sessions[0];
-        if (recentSession) {
+        if (recentSession && (!selectedEntrypoint || recentSession.entrypoint_id === selectedEntrypoint.entrypoint_id)) {
           // Use resume endpoint to properly restore session
           const resumeRes = await sessionApi.getSessionResume(recentSession.portal_session_id);
           applyResumePayload(resumeRes.data);
           setIsLaunching(false);
+          await refreshUserState();
           return;
         }
       }
 
       // No recent session or non-native resource: create new launch/session
-      const response = await resourceApi.launchResource(resource.id);
+      const response = await resourceApi.launchResource(resource.id, selectedEntrypoint?.entrypoint_id);
       const launchData: LaunchResponse = response.data;
       applyLaunchResponse(launchData);
+      await refreshUserState();
     } catch (error: any) {
       console.error('Failed to launch resource:', error);
       alert(error.response?.data?.detail || '启动失败');
@@ -108,6 +147,7 @@ function App() {
    */
   const applyResumePayload = (resume: SessionResumePayload) => {
     setCurrentSessionId(resume.portal_session_id);
+    setCurrentEntrypointId(resume.entrypoint_id ?? null);
     
     if (resume.mode === 'native') {
       setCurrentLaunchId(null);
@@ -129,12 +169,14 @@ function App() {
   const applyLaunchResponse = (launchData: LaunchResponse) => {
     if (launchData.mode === 'native' && launchData.portal_session_id) {
       setCurrentSessionId(launchData.portal_session_id);
+      setCurrentEntrypointId(launchData.entrypoint_id ?? null);
       setCurrentLaunchId(null);
       setWorkspaceMode(null);
       setShowWorkspace(false);
       navigate('/');
     } else if (launchData.mode === 'embedded' && launchData.launch_id) {
       setCurrentSessionId(launchData.portal_session_id ?? null);
+      setCurrentEntrypointId(launchData.entrypoint_id ?? null);
       setCurrentLaunchId(launchData.launch_id);
       setWorkspaceMode(launchData.adapter === 'iframe' ? 'iframe' : 'websdk');
       setShowWorkspace(true);
@@ -160,6 +202,7 @@ function App() {
       }
       
       applyResumePayload(resume);
+      await refreshUserState();
     } catch (error) {
       console.error('Failed to select session:', error);
       alert('无法恢复会话');
@@ -170,9 +213,10 @@ function App() {
     if (currentResource) {
       setIsLaunching(true);
       try {
-        const response = await resourceApi.launchResource(currentResource.id);
+        const response = await resourceApi.launchResource(currentResource.id, currentEntrypointId || undefined);
         const launchData: LaunchResponse = response.data;
         applyLaunchResponse(launchData);
+        await refreshUserState();
       } catch (error: any) {
         console.error('Failed to start new chat:', error);
         alert(error.response?.data?.detail || '启动失败');
@@ -275,8 +319,19 @@ function App() {
         {/* Left: Resource Sidebar */}
         <ResourceSidebar
           resourcesGrouped={resourcesGrouped}
+          recommendedResources={recommendedResources}
+          recentResources={recentResources}
+          favoriteResources={favoriteResources}
           currentResourceId={currentResource?.id}
           onSelectResource={handleSelectResource}
+          onToggleFavorite={async (resource, favorited) => {
+            if (favorited) {
+              await resourceApi.removeFavorite(resource.id);
+            } else {
+              await resourceApi.addFavorite(resource.id);
+            }
+            await refreshUserState();
+          }}
         />
 
         {/* Middle: Chat/Content Area */}
@@ -294,6 +349,7 @@ function App() {
                   onSelectSession={handleSelectSession}
                   onNewChat={handleNewChat}
                   isLaunching={isLaunching}
+                  currentEntrypointId={currentEntrypointId}
                 />
               }
             />
@@ -305,6 +361,7 @@ function App() {
                   onResourceChange={setCurrentResource}
                   onSelectSession={handleSelectSession}
                   onNewChat={handleNewChat}
+                  currentEntrypointId={currentEntrypointId}
                 />
               }
             />
@@ -333,6 +390,7 @@ interface MainContentProps {
   onSelectSession: (sessionId: string) => void;
   onNewChat: () => void;
   isLaunching: boolean;
+  currentEntrypointId: string | null;
 }
 
 function MainContent({
@@ -344,6 +402,7 @@ function MainContent({
   onSelectSession,
   onNewChat,
   isLaunching,
+  currentEntrypointId,
 }: MainContentProps) {
   const handleSessionSelect = (session: PortalSession) => {
     onSelectSession(session.portal_session_id);
@@ -380,6 +439,7 @@ function MainContent({
           <div className="w-60 border-r bg-white hidden xl:flex flex-col flex-shrink-0">
             <SessionSidebar
               currentSessionId={currentSessionId || undefined}
+              currentEntrypointId={currentEntrypointId || undefined}
               onSelectSession={handleSessionSelect}
               onNewChat={onNewChat}
             />
@@ -440,11 +500,13 @@ function ChatRoutePage({
   onResourceChange,
   onSelectSession,
   onNewChat,
+  currentEntrypointId,
 }: {
   resourcesGrouped: Record<string, Resource[]>;
   onResourceChange: (resource: Resource) => void;
   onSelectSession: (sessionId: string) => void;
   onNewChat: () => void;
+  currentEntrypointId: string | null;
 }) {
   const { sessionId } = useParams();
   const [resource, setResource] = useState<Resource | null>(null);
@@ -476,6 +538,7 @@ function ChatRoutePage({
       <div className="w-64 border-r bg-white hidden lg:flex flex-col">
         <SessionSidebar
           currentSessionId={sessionId}
+          currentEntrypointId={currentEntrypointId || undefined}
           onSelectSession={(session) => onSelectSession(session.portal_session_id)}
           onNewChat={onNewChat}
         />

@@ -6,7 +6,7 @@ import copy
 import hashlib
 import logging
 from contextlib import asynccontextmanager
-from typing import List, Optional, AsyncIterator
+from typing import List, Optional, AsyncIterator, Dict, Any
 from datetime import datetime
 from fastapi import FastAPI, Depends, HTTPException, status, Request, Query, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
@@ -20,7 +20,7 @@ from .models import (
     Resource, LaunchResponse, Message, SkillInfo, EmbedConfig, IframeConfig,
     ResourceType, LaunchMode, PortalSession, LaunchRecord, SessionBinding,
     PortalMessage, ContextScope, EnrichedPortalSession,
-    SessionResumePayload
+    SessionResumePayload, LaunchRequest, ResourceEntrypoint
 )
 from .auth.deps import SessionUser, OptionalUser, AdminUser
 from .auth.routes import router as auth_router
@@ -184,16 +184,13 @@ def _require_resource_access(resource: Resource, user) -> None:
     acl_service.require_resource_access(resource, user)
 
 
-def _get_adapter_for_resource(resource: Resource) -> str:
-    """
-    Determine adapter name from resource.
-    Priority: resource.adapter > resource.type mapping
-    """
-    # If adapter is explicitly set, use it
+def _get_adapter_for_resource(resource: Resource, entrypoint: Optional[ResourceEntrypoint] = None) -> str:
+    """Determine adapter name from resource or selected entrypoint."""
+    if entrypoint and entrypoint.adapter:
+        return entrypoint.adapter
     if resource.adapter:
         return resource.adapter
-    
-    # Otherwise, map from resource type
+
     type_adapter_map = {
         ResourceType.DIRECT_CHAT: "opencode",
         ResourceType.SKILL_CHAT: "skill_chat",
@@ -204,6 +201,14 @@ def _get_adapter_for_resource(resource: Resource) -> str:
     }
     
     return type_adapter_map.get(resource.type, "opencode")
+
+
+def _entrypoint_workspace(resource: Resource, entrypoint: ResourceEntrypoint) -> Optional[str]:
+    return entrypoint.workspace_id or resource.config.workspace_id
+
+
+def _entrypoint_skill_name(resource: Resource, entrypoint: ResourceEntrypoint) -> Optional[str]:
+    return entrypoint.skill_name or resource.config.skill_name
 
 
 async def _save_portal_message(
@@ -273,22 +278,28 @@ def _enrich_session(session: PortalSession) -> dict:
         "parent_session_id": session.parent_session_id,
         "metadata": session.metadata,
         "adapter": adapter,
+        "entrypoint_id": snapshot.get("entrypoint_id"),
+        "workspace_id": snapshot.get("workspace_id"),
+        "skill_name": snapshot.get("skill_name"),
         "mode": "native" if launch_mode == "native" else "embedded",
     }
 
 
-def _build_resource_snapshot(resource: Resource) -> dict:
-    """Build resource snapshot at launch time"""
+def _build_resource_snapshot(resource: Resource, entrypoint: ResourceEntrypoint) -> dict:
+    """Build resource snapshot at launch time."""
     return {
         "resource_id": resource.id,
         "resource_name": resource.name,
         "resource_type": resource.type.value,
-        "launch_mode": resource.launch_mode.value,
-        "adapter": _get_adapter_for_resource(resource),
+        "launch_mode": entrypoint.launch_mode.value,
+        "adapter": _get_adapter_for_resource(resource, entrypoint),
         "group": resource.group,
         "description": resource.description,
-        "workspace_id": resource.config.workspace_id,
-        "skill_name": resource.config.skill_name,
+        "resource_kind": resource.resource_kind,
+        "entrypoint_id": entrypoint.entrypoint_id,
+        "entrypoint_title": entrypoint.title,
+        "workspace_id": _entrypoint_workspace(resource, entrypoint),
+        "skill_name": _entrypoint_skill_name(resource, entrypoint),
         "starter_prompts": resource.config.starter_prompts,
         "model": resource.config.model,
         "iframe_url": resource.config.iframe_url,
@@ -296,6 +307,48 @@ def _build_resource_snapshot(resource: Resource) -> dict:
         "app_key": resource.config.app_key,
         "base_url": resource.config.base_url,
     }
+
+
+def _serialize_resource_list(resources: List[Resource]) -> List[Dict[str, Any]]:
+    return [resource.model_dump() for resource in resources]
+
+
+def _derive_profile_tags(user) -> List[str]:
+    tags: List[str] = []
+    dept = (getattr(user, "dept", "") or "").lower()
+    if "engineering" in dept or "it" in dept:
+        tags.append("prefers_native_chat")
+    if "data" in dept:
+        tags.append("frequent_data_analysis")
+    if "hr" in dept:
+        tags.append("uses_hr_workspace")
+    return tags
+
+
+async def _record_usage_event(
+    user,
+    resource: Resource,
+    *,
+    action: str,
+    portal_session_id: Optional[str] = None,
+    entrypoint_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    skill_name: Optional[str] = None,
+) -> None:
+    await storage.record_recent_resource(user.emp_no, resource.id)
+    await storage.save_profile_tags(user.emp_no, _derive_profile_tags(user))
+    await storage.append_usage_event(
+        user.emp_no,
+        {
+            "action": action,
+            "resource_id": resource.id,
+            "portal_session_id": portal_session_id,
+            "entrypoint_id": entrypoint_id,
+            "workspace_id": workspace_id,
+            "skill_name": skill_name,
+            "timestamp": datetime.utcnow().isoformat(),
+        },
+    )
 
 
 def deep_merge(dst: dict, src: dict) -> dict:
@@ -370,6 +423,67 @@ async def list_resources_grouped(user: SessionUser):
     return groups
 
 
+@app.get("/api/resources/search")
+async def search_resources(q: str = Query(""), user: SessionUser = None):
+    """Search accessible resources."""
+    results = catalog_service.search_resources(q, user)
+    return {"items": _serialize_resource_list(results), "query": q}
+
+
+@app.get("/api/resources/recent")
+async def list_recent_resources(user: SessionUser):
+    """List user's recent resources."""
+    recent_ids = await storage.list_recent_resources(user.emp_no)
+    resources = []
+    for resource_id in recent_ids:
+        resource = catalog_service.get_resource_or_none(resource_id)
+        if resource and acl_service.check_resource_access(resource, user):
+            resources.append(resource)
+    return {"items": _serialize_resource_list(resources)}
+
+
+@app.get("/api/resources/favorites")
+async def list_favorite_resources(user: SessionUser):
+    """List user's favorite resources."""
+    favorite_ids = await storage.list_favorite_resources(user.emp_no)
+    resources = []
+    for resource_id in favorite_ids:
+        resource = catalog_service.get_resource_or_none(resource_id)
+        if resource and acl_service.check_resource_access(resource, user):
+            resources.append(resource)
+    return {"items": _serialize_resource_list(resources)}
+
+
+@app.post("/api/resources/{resource_id}/favorite")
+async def add_favorite_resource(resource_id: str, user: SessionUser):
+    """Favorite a resource."""
+    resource = _get_resource_or_404(resource_id)
+    _require_resource_access(resource, user)
+    favorites = await storage.add_favorite_resource(user.emp_no, resource_id)
+    return {"success": True, "favorites": favorites}
+
+
+@app.delete("/api/resources/{resource_id}/favorite")
+async def remove_favorite_resource(resource_id: str, user: SessionUser):
+    """Remove a resource from favorites."""
+    resource = _get_resource_or_404(resource_id)
+    _require_resource_access(resource, user)
+    favorites = await storage.remove_favorite_resource(user.emp_no, resource_id)
+    return {"success": True, "favorites": favorites}
+
+
+@app.get("/api/resources/recommended")
+async def list_recommended_resources(user: SessionUser):
+    """List rule-based recommended resources."""
+    recommended = catalog_service.recommend_resources(
+        user,
+        recent_resource_ids=await storage.list_recent_resources(user.emp_no),
+        favorite_resource_ids=await storage.list_favorite_resources(user.emp_no),
+        profile_tags=await storage.list_profile_tags(user.emp_no),
+    )
+    return {"items": _serialize_resource_list(recommended)}
+
+
 @app.get("/api/resources/{resource_id}", response_model=Resource)
 async def get_resource(resource_id: str, user: SessionUser):
     """Get resource details by ID"""
@@ -379,17 +493,18 @@ async def get_resource(resource_id: str, user: SessionUser):
 
 
 @app.post("/api/resources/{resource_id}/launch", response_model=LaunchResponse)
-async def launch_resource(resource_id: str, user: SessionUser):
+async def launch_resource(resource_id: str, body: LaunchRequest | None = None, user: SessionUser = None):
     """
     Launch a resource (create session or generate launch token).
     Creates a PortalSession + SessionBinding for all resource types.
     """
     resource = _get_resource_or_404(resource_id)
     _require_resource_access(resource, user)
+    entrypoint = catalog_service.resolve_entrypoint(resource, body.entrypoint_id if body else None)
 
     portal_session_id = str(uuid.uuid4())
-    snapshot = _build_resource_snapshot(resource)
-    adapter_name = _get_adapter_for_resource(resource)
+    snapshot = _build_resource_snapshot(resource, entrypoint)
+    adapter_name = _get_adapter_for_resource(resource, entrypoint)
 
     portal_session = PortalSession(
         portal_session_id=portal_session_id,
@@ -401,7 +516,7 @@ async def launch_resource(resource_id: str, user: SessionUser):
         metadata={"adapter": adapter_name}
     )
 
-    if resource.launch_mode == LaunchMode.NATIVE:
+    if entrypoint.launch_mode == LaunchMode.NATIVE:
         user_context = {
             "emp_no": user.emp_no,
             "name": user.name,
@@ -409,6 +524,8 @@ async def launch_resource(resource_id: str, user: SessionUser):
             "email": user.email
         }
         config = resource.config.model_dump()
+        config["workspace_id"] = _entrypoint_workspace(resource, entrypoint)
+        config["skill_name"] = _entrypoint_skill_name(resource, entrypoint)
 
         # Create engine session based on adapter type
         if adapter_name == "skill_chat":
@@ -430,26 +547,37 @@ async def launch_resource(resource_id: str, user: SessionUser):
             engine_type = "opencode"
             skill_name = None
 
-        binding = SessionBinding(
+            binding = SessionBinding(
             binding_id=str(uuid.uuid4()),
             portal_session_id=portal_session_id,
             engine_type=engine_type,
             adapter=adapter_name,
             engine_session_id=engine_session_id,
-            workspace_id=resource.config.workspace_id or "default",
+            entrypoint_id=entrypoint.entrypoint_id,
+            workspace_id=_entrypoint_workspace(resource, entrypoint) or "default",
             skill_name=skill_name,
         )
         await storage.save_binding(binding)
         await storage.save_session(portal_session)
+        await _record_usage_event(
+            user,
+            resource,
+            action="launch",
+            portal_session_id=portal_session_id,
+            entrypoint_id=entrypoint.entrypoint_id,
+            workspace_id=binding.workspace_id,
+            skill_name=binding.skill_name,
+        )
 
         return LaunchResponse(
             kind=LaunchMode.NATIVE,
             portal_session_id=portal_session.portal_session_id,
             adapter=adapter_name,
-            mode="native"
+            mode="native",
+            entrypoint_id=entrypoint.entrypoint_id,
         )
 
-    elif resource.launch_mode == LaunchMode.WEBSDK:
+    elif entrypoint.launch_mode == LaunchMode.WEBSDK:
         launch_record = websdk_adapter.create_launch_record(resource, user)
         await storage.save_launch(launch_record)
 
@@ -459,20 +587,30 @@ async def launch_resource(resource_id: str, user: SessionUser):
             engine_type="websdk",
             adapter="websdk",
             external_session_ref=launch_record.launch_id,
-            workspace_id=resource.config.workspace_id or "default",
+            entrypoint_id=entrypoint.entrypoint_id,
+            workspace_id=_entrypoint_workspace(resource, entrypoint) or "default",
         )
         await storage.save_binding(binding)
         await storage.save_session(portal_session)
+        await _record_usage_event(
+            user,
+            resource,
+            action="launch",
+            portal_session_id=portal_session_id,
+            entrypoint_id=entrypoint.entrypoint_id,
+            workspace_id=binding.workspace_id,
+        )
 
         return LaunchResponse(
             kind=LaunchMode.WEBSDK,
             portal_session_id=portal_session_id,
             launch_id=launch_record.launch_id,
             adapter="websdk",
-            mode="embedded"
+            mode="embedded",
+            entrypoint_id=entrypoint.entrypoint_id,
         )
 
-    elif resource.launch_mode == LaunchMode.IFRAME:
+    elif entrypoint.launch_mode == LaunchMode.IFRAME:
         launch_record = iframe_adapter.create_launch_record(resource, user)
         await storage.save_launch(launch_record)
 
@@ -482,17 +620,27 @@ async def launch_resource(resource_id: str, user: SessionUser):
             engine_type="iframe",
             adapter="iframe",
             external_session_ref=launch_record.launch_id,
-            workspace_id=resource.config.workspace_id or "default",
+            entrypoint_id=entrypoint.entrypoint_id,
+            workspace_id=_entrypoint_workspace(resource, entrypoint) or "default",
         )
         await storage.save_binding(binding)
         await storage.save_session(portal_session)
+        await _record_usage_event(
+            user,
+            resource,
+            action="launch",
+            portal_session_id=portal_session_id,
+            entrypoint_id=entrypoint.entrypoint_id,
+            workspace_id=binding.workspace_id,
+        )
 
         return LaunchResponse(
             kind=LaunchMode.IFRAME,
             portal_session_id=portal_session_id,
             launch_id=launch_record.launch_id,
             adapter="iframe",
-            mode="embedded"
+            mode="embedded",
+            entrypoint_id=entrypoint.entrypoint_id,
         )
 
     else:
@@ -556,7 +704,16 @@ async def get_session_resume(portal_session_id: str, user: SessionUser) -> Sessi
             binding.external_session_ref = launch.launch_id
             await storage.save_binding(binding)
             launch_id = launch.launch_id
-        
+        if resource:
+            await _record_usage_event(
+                user,
+                resource,
+                action="resume",
+                portal_session_id=portal_session_id,
+                entrypoint_id=binding.entrypoint_id,
+                workspace_id=binding.workspace_id,
+                skill_name=binding.skill_name,
+            )
         return SessionResumePayload(
             portal_session_id=portal_session_id,
             resource_id=session.resource_id,
@@ -564,11 +721,25 @@ async def get_session_resume(portal_session_id: str, user: SessionUser) -> Sessi
             adapter=adapter,
             mode="embedded",
             launch_id=launch_id,
+            entrypoint_id=binding.entrypoint_id,
+            workspace_id=binding.workspace_id,
+            skill_name=binding.skill_name,
             show_chat_history=False,
             show_workspace=True,
         )
     
     # Native mode (chat)
+    if resource:
+        await _record_usage_event(
+            user,
+            resource,
+            action="resume",
+            portal_session_id=portal_session_id,
+            entrypoint_id=binding.entrypoint_id,
+            workspace_id=binding.workspace_id,
+            skill_name=binding.skill_name,
+        )
+
     return SessionResumePayload(
         portal_session_id=portal_session_id,
         resource_id=session.resource_id,
@@ -576,6 +747,9 @@ async def get_session_resume(portal_session_id: str, user: SessionUser) -> Sessi
         adapter=adapter,
         mode="native",
         launch_id=None,
+        entrypoint_id=binding.entrypoint_id,
+        workspace_id=binding.workspace_id,
+        skill_name=binding.skill_name,
         show_chat_history=True,
         show_workspace=False,
     )
@@ -675,6 +849,8 @@ async def send_session_message(
                 body.text,
                 trace_id,
                 skill_name=binding.skill_name,
+                workspace_id=binding.workspace_id,
+                entrypoint_id=binding.entrypoint_id,
             )
         elif adapter_name == "openai_compatible":
             # Get history for context
@@ -705,6 +881,17 @@ async def send_session_message(
 
         _update_session_preview(session, response)
         await storage.save_session(session)
+        resource = catalog_service.get_resource_or_none(session.resource_id)
+        if resource:
+            await _record_usage_event(
+                user,
+                resource,
+                action="message",
+                portal_session_id=portal_session_id,
+                entrypoint_id=binding.entrypoint_id,
+                workspace_id=binding.workspace_id,
+                skill_name=binding.skill_name,
+            )
 
         return {
             "response": response,
@@ -819,6 +1006,8 @@ async def stream_message_response(
                 body.text,
                 trace_id,
                 skill_name=binding.skill_name,
+                workspace_id=binding.workspace_id,
+                entrypoint_id=binding.entrypoint_id,
             )
         elif adapter_name == "openai_compatible":
             resource = catalog_service.get_resource_by_id(session.resource_id)
@@ -851,6 +1040,17 @@ async def stream_message_response(
 
         _update_session_preview(session, accumulated)
         await storage.save_session(session)
+        resource = catalog_service.get_resource_or_none(session.resource_id)
+        if resource:
+            await _record_usage_event(
+                user,
+                resource,
+                action="message_stream",
+                portal_session_id=portal_session_id,
+                entrypoint_id=binding.entrypoint_id,
+                workspace_id=binding.workspace_id,
+                skill_name=binding.skill_name,
+            )
 
         # Send single done event
         yield f"data: {json.dumps({'type': 'done', 'message_id': assistant_message_id, 'finish_reason': 'stop'})}\n\n"
@@ -1021,31 +1221,80 @@ async def get_iframe_config(launch_id: str, user: SessionUser):
 
 
 @app.get("/api/skills", response_model=List[SkillInfo])
-async def list_skills(user: SessionUser):
-    """List all skills with installation status"""
-    skill_resources = catalog_service.get_skill_resources()
+async def list_skills(
+    user: SessionUser,
+    workspace_id: Optional[str] = Query(None),
+    q: Optional[str] = Query(None),
+    installed: Optional[bool] = Query(None),
+):
+    """List skill-store resources merged with OpenWork workspace state."""
+    skill_resources = [
+        resource
+        for resource in catalog_service.get_skill_store_resources()
+        if acl_service.check_resource_access(resource, user)
+    ]
+    workspace_ids = sorted(
+        {
+            item.workspace_id or resource.config.workspace_id or "default"
+            for resource in skill_resources
+            for item in resource.entrypoints
+            if item.adapter == "skill_chat"
+        }
+        or {"default"}
+    )
+    if workspace_id:
+        workspace_ids = [workspace_id]
 
-    skills = []
+    workspace_skill_map: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for current_workspace in workspace_ids:
+        discovered_skills = await openwork_adapter.list_skills(workspace_id=current_workspace)
+        workspace_skill_map[current_workspace] = {
+            (skill.get("name") or skill.get("skill_name") or skill.get("id")): skill
+            for skill in discovered_skills
+            if (skill.get("name") or skill.get("skill_name") or skill.get("id"))
+        }
+
+    items: List[SkillInfo] = []
     for resource in skill_resources:
-        if not acl_service.check_resource_access(resource, user):
-            continue
+        for entrypoint in resource.entrypoints:
+            if entrypoint.adapter != "skill_chat" or not entrypoint.enabled:
+                continue
+            entrypoint_workspace = entrypoint.workspace_id or resource.config.workspace_id or "default"
+            if workspace_id and entrypoint_workspace != workspace_id:
+                continue
+            skill_name = entrypoint.skill_name or resource.config.skill_name
+            discovered = workspace_skill_map.get(entrypoint_workspace, {}).get(skill_name or "", {})
+            installed_state = bool(discovered)
+            if installed is not None and installed_state != installed:
+                continue
+            searchable_text = " ".join(
+                [
+                    resource.name,
+                    resource.description,
+                    skill_name or "",
+                    entrypoint_workspace,
+                ]
+            ).lower()
+            if q and q.lower() not in searchable_text:
+                continue
+            items.append(
+                SkillInfo(
+                    id=resource.id,
+                    name=resource.name,
+                    description=resource.description,
+                    installed=installed_state,
+                    skill_name=skill_name,
+                    starter_prompts=resource.config.starter_prompts,
+                    workspace_id=entrypoint_workspace,
+                    version=(resource.sync_meta.version if resource.sync_meta else None) or discovered.get("version"),
+                    entrypoint_id=entrypoint.entrypoint_id,
+                    source=(resource.sync_meta.origin if resource.sync_meta else None) or "portal",
+                    status=(resource.sync_meta.sync_status if resource.sync_meta else None) or ("installed" if installed_state else "missing"),
+                )
+            )
 
-        skill_name = resource.config.skill_name
-        skill_status = await openwork_adapter.get_skill_status(
-            skill_name,
-            resource.config.workspace_id or "default"
-        )
-
-        skills.append(SkillInfo(
-            id=resource.id,
-            name=resource.name,
-            description=resource.description,
-            installed=skill_status.get("installed", False),
-            skill_name=skill_name,
-            starter_prompts=resource.config.starter_prompts
-        ))
-
-    return skills
+    items.sort(key=lambda item: ((item.workspace_id or ""), item.name))
+    return items
 
 
 @app.get("/api/launches")

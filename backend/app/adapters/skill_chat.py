@@ -50,7 +50,9 @@ class SkillChatAdapter(ExecutionAdapter):
         session_id: str,
         message: str,
         trace_id: Optional[str] = None,
-        skill_name: Optional[str] = None
+        skill_name: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+        entrypoint_id: Optional[str] = None,
     ) -> str:
         """
         Send a message to skill chat session
@@ -60,11 +62,20 @@ class SkillChatAdapter(ExecutionAdapter):
         resolved_skill = skill_name or self._session_skill_map.get(session_id, "unknown_skill")
         system_prompt = self._build_skill_mode_system_prompt(resolved_skill)
 
+        extra_body = {
+            "portal_metadata": {
+                "workspace_id": workspace_id,
+                "entrypoint_id": entrypoint_id,
+                "skill_name": resolved_skill,
+            }
+        }
+
         return await self.opencode_adapter.send_message(
             session_id=session_id,
             message=message,
             trace_id=trace_id,
             system_prompt=system_prompt,
+            extra_body=extra_body,
         )
 
     async def send_message_stream(
@@ -72,7 +83,9 @@ class SkillChatAdapter(ExecutionAdapter):
         session_id: str,
         message: str,
         trace_id: Optional[str] = None,
-        skill_name: Optional[str] = None
+        skill_name: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+        entrypoint_id: Optional[str] = None,
     ) -> AsyncIterator[str]:
         """
         Send a message to skill chat session with streaming response
@@ -82,11 +95,20 @@ class SkillChatAdapter(ExecutionAdapter):
         resolved_skill = skill_name or self._session_skill_map.get(session_id, "unknown_skill")
         system_prompt = self._build_skill_mode_system_prompt(resolved_skill)
 
+        extra_body = {
+            "portal_metadata": {
+                "workspace_id": workspace_id,
+                "entrypoint_id": entrypoint_id,
+                "skill_name": resolved_skill,
+            }
+        }
+
         async for chunk in self.opencode_adapter.send_message_stream(
             session_id=session_id,
             message=message,
             trace_id=trace_id,
             system_prompt=system_prompt,
+            extra_body=extra_body,
         ):
             yield chunk
 

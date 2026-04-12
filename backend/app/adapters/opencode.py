@@ -111,7 +111,10 @@ class OpenCodeAdapter(ExecutionAdapter):
         session_id: str,
         message: str,
         trace_id: Optional[str] = None,
-        system_prompt: Optional[str] = None
+        system_prompt: Optional[str] = None,
+        agent: Optional[str] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        extra_body: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Send a message to OpenCode session
@@ -128,6 +131,12 @@ class OpenCodeAdapter(ExecutionAdapter):
         }
         if system_prompt:
             payload["system"] = system_prompt
+        if agent:
+            payload["agent"] = agent
+        if tools:
+            payload["tools"] = tools
+        if extra_body:
+            payload.update(extra_body)
 
         try:
             response = await client.post(
@@ -152,7 +161,10 @@ class OpenCodeAdapter(ExecutionAdapter):
         session_id: str,
         message: str,
         trace_id: Optional[str] = None,
-        system_prompt: Optional[str] = None
+        system_prompt: Optional[str] = None,
+        agent: Optional[str] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        extra_body: Optional[Dict[str, Any]] = None,
     ) -> AsyncIterator[str]:
         """
         Send a message to OpenCode session with streaming response
@@ -170,6 +182,12 @@ class OpenCodeAdapter(ExecutionAdapter):
         }
         if system_prompt:
             payload["system"] = system_prompt
+        if agent:
+            payload["agent"] = agent
+        if tools:
+            payload["tools"] = tools
+        if extra_body:
+            payload.update(extra_body)
 
         try:
             async with client.stream(

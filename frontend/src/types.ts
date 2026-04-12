@@ -56,6 +56,24 @@ export interface ResourceSyncMeta {
   last_seen_at?: string;
 }
 
+export interface ResourceEntrypoint {
+  entrypoint_id: string;
+  title: string;
+  adapter: AdapterType;
+  launch_mode: LaunchMode;
+  enabled: boolean;
+  is_default: boolean;
+  skill_name?: string;
+  workspace_id?: string;
+}
+
+export interface ResourceCapabilities {
+  searchable: boolean;
+  resumable: boolean;
+  upload: boolean;
+  auditable: boolean;
+}
+
 export interface Resource {
   id: string;
   name: string;
@@ -69,6 +87,10 @@ export interface Resource {
   config: ResourceConfig;
   acl?: any;
   sync_meta?: ResourceSyncMeta;
+  resource_kind?: string;
+  entrypoints: ResourceEntrypoint[];
+  capabilities?: ResourceCapabilities;
+  recommended_for?: Record<string, any>;
 }
 
 export interface PortalSession {
@@ -88,6 +110,9 @@ export interface PortalSession {
   metadata?: Record<string, any>;
   adapter?: AdapterType;
   mode?: 'native' | 'embedded';
+  entrypoint_id?: string;
+  workspace_id?: string;
+  skill_name?: string;
 }
 
 export interface SessionBinding {
@@ -97,6 +122,7 @@ export interface SessionBinding {
   adapter: AdapterType;
   engine_session_id?: string;
   external_session_ref?: string;
+  entrypoint_id?: string;
   workspace_id?: string;
   skill_name?: string;
   binding_status: string;
@@ -175,6 +201,7 @@ export interface LaunchResponse {
   launch_id?: string;
   adapter?: AdapterType;
   mode?: 'native' | 'embedded';
+  entrypoint_id?: string;
 }
 
 export interface SkillInfo {
@@ -184,6 +211,11 @@ export interface SkillInfo {
   installed: boolean;
   skill_name?: string;
   starter_prompts?: string[];
+  workspace_id?: string;
+  version?: string;
+  entrypoint_id?: string;
+  source?: string;
+  status?: string;
 }
 
 export interface EmbedConfig {
@@ -207,8 +239,15 @@ export interface SessionResumePayload {
   adapter: AdapterType;
   mode: 'native' | 'embedded';
   launch_id?: string | null;
+  entrypoint_id?: string | null;
+  workspace_id?: string | null;
+  skill_name?: string | null;
   show_chat_history: boolean;
   show_workspace: boolean;
+}
+
+export interface ResourceListResponse {
+  items: Resource[];
 }
 
 // V2 Stream Handlers

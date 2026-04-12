@@ -1,6 +1,7 @@
 """Authentication dependencies for FastAPI routes - Server-side session version"""
 
 import time
+import hashlib
 from typing import Annotated
 from fastapi import Cookie, Depends, HTTPException, status
 
@@ -8,6 +9,21 @@ from ..config import settings
 from ..models import UserCtx
 from .service import auth_session_service, user_repo
 from ..store import store as storage
+
+
+def _snapshot_complete(snapshot: dict) -> bool:
+    required = ("emp_no", "name", "dept", "roles")
+    return all(snapshot.get(key) is not None for key in required)
+
+
+def _build_user_from_snapshot(snapshot: dict) -> UserCtx:
+    return UserCtx(
+        emp_no=snapshot["emp_no"],
+        name=snapshot["name"],
+        dept=snapshot.get("dept") or "demo",
+        roles=list(snapshot.get("roles") or ["employee"]),
+        email=snapshot.get("email"),
+    )
 
 
 async def get_session_user(
@@ -47,14 +63,28 @@ async def get_session_user(
     auth_session.last_seen_at = now
     await storage.save_auth_session(auth_session)
     
-    # Get user from repository
+    snapshot = auth_session.user_snapshot or {}
+    if _snapshot_complete(snapshot):
+        return _build_user_from_snapshot(snapshot)
+
     user = await user_repo.get_user_by_emp_no(auth_session.user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
         )
-    
+
+    auth_session.user_snapshot = {
+        "emp_no": user.emp_no,
+        "name": user.name,
+        "dept": user.dept,
+        "email": user.email,
+        "roles": list(user.roles),
+        "claims_digest": hashlib.sha256(
+            repr(sorted((auth_session.id_token_claims or {}).items())).encode("utf-8")
+        ).hexdigest(),
+    }
+    await storage.save_auth_session(auth_session)
     return user
 
 
