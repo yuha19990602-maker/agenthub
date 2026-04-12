@@ -62,12 +62,16 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     # Validate startup configuration
     validate_startup()
+    opencode_caps = await opencode_adapter.probe_capabilities(force_refresh=True)
+    openwork_caps = await openwork_adapter.probe_capabilities(force_refresh=True)
     
     # Startup
     print(f"🚀 {settings.portal_name} starting up...")
     print(f"📦 Loaded {len(catalog_service.get_resources())} resources")
     print(f"🤖 OpenCode: {settings.opencode_base_url}")
+    print(f"   OpenCode capabilities: healthy={opencode_caps.get('healthy')} version={opencode_caps.get('version')}")
     print(f"🛠️  OpenWork: {settings.openwork_base_url}")
+    print(f"   OpenWork capabilities: healthy={openwork_caps.get('healthy')} version={openwork_caps.get('version')}")
     print(f"🔐 Auth: Server-side session (Redis deprecated)")
 
     yield
@@ -392,10 +396,23 @@ CONTEXT_PRIORITY = ["global", "user", "user_resource", "session"]
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint"""
+    opencode_caps = await opencode_adapter.probe_capabilities()
+    openwork_caps = await openwork_adapter.probe_capabilities()
     return {
         "status": "healthy",
         "portal_name": settings.portal_name,
-        "version": "2.0.0"
+        "version": "2.0.0",
+        "upstreams": {
+            "opencode": {
+                "healthy": opencode_caps.get("healthy", False),
+                "version": opencode_caps.get("version"),
+            },
+            "openwork": {
+                "healthy": openwork_caps.get("healthy", False),
+                "version": openwork_caps.get("version"),
+                "auth": openwork_caps.get("auth", {}),
+            },
+        },
     }
 
 

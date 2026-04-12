@@ -30,6 +30,7 @@ class OpenCodeAdapter(ExecutionAdapter):
         self._client: Optional[httpx.AsyncClient] = None
         self._client_lock = asyncio.Lock()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._capabilities: Optional[Dict[str, Any]] = None
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client with event loop safety"""
@@ -68,6 +69,53 @@ class OpenCodeAdapter(ExecutionAdapter):
                 finally:
                     self._client = None
                     self._loop = None
+
+    async def probe_capabilities(self, force_refresh: bool = False) -> Dict[str, Any]:
+        """Probe runtime capabilities of the configured OpenCode server."""
+        if self._capabilities is not None and not force_refresh:
+            return self._capabilities
+
+        client = await self._get_client()
+        try:
+            response = await client.get("/session")
+            response.raise_for_status()
+            payload = response.json()
+            sessions = payload if isinstance(payload, list) else payload.get("sessions", [])
+            version = None
+            if sessions and isinstance(sessions[0], dict):
+                version = sessions[0].get("version")
+            self._capabilities = {
+                "healthy": True,
+                "version": version,
+                "routes": {
+                    "session_list": True,
+                    "session_detail": True,
+                    "message": True,
+                    "stream_json_fallback": True,
+                },
+            }
+        except httpx.HTTPError as e:
+            logger.warning("Failed to probe OpenCode capabilities: %s", e)
+            self._capabilities = {
+                "healthy": False,
+                "version": None,
+                "routes": {},
+            }
+        return self._capabilities
+
+    async def get_session_detail(
+        self,
+        session_id: str,
+        trace_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Get session detail from OpenCode."""
+        client = await self._get_client()
+        headers = {}
+        if trace_id:
+            headers["X-Trace-ID"] = trace_id
+        response = await client.get(f"/session/{session_id}", headers=headers)
+        response.raise_for_status()
+        return response.json()
 
     async def create_session(
         self,
@@ -198,6 +246,16 @@ class OpenCodeAdapter(ExecutionAdapter):
                 timeout=120.0
             ) as response:
                 response.raise_for_status()
+                content_type = response.headers.get("content-type", "")
+
+                # Current local OpenCode builds may return a single JSON object even when stream=true.
+                if "application/json" in content_type and "text/event-stream" not in content_type:
+                    payload = json.loads(await response.aread())
+                    chunk_text = self._extract_stream_chunk_text(payload)
+                    if chunk_text:
+                        yield chunk_text
+                    logger.info("OpenCode stream request returned buffered JSON for session %s", session_id)
+                    return
                 
                 # Process SSE stream
                 async for line in response.aiter_lines():

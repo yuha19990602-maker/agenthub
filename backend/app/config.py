@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     # OpenWork
     openwork_base_url: str = os.getenv("OPENWORK_BASE_URL", "http://127.0.0.1:8787")
     openwork_token: str = os.getenv("OPENWORK_TOKEN", "")
+    openwork_host_token: str = os.getenv("OPENWORK_HOST_TOKEN", "")
+    openwork_probe_workspace_id: str = os.getenv("OPENWORK_PROBE_WORKSPACE_ID", "default")
 
     # Portal
     portal_name: str = os.getenv("PORTAL_NAME", "AI Portal")
